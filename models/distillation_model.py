@@ -33,6 +33,16 @@ def KL_wo(y_s, y_t,T=1):
     return loss
 
 class Sinkhorn_seq(nn.Module):
+    """Sequence-level Sinkhorn OT distance between two probability tensors.
+
+    Notation used in the diagnostics:
+      * ``epsilon`` is the entropic-regularisation strength in ``K = exp(-C/epsilon)``.
+        The paper calls this lambda. Default 0.1.
+      * The per-sample Sinkhorn output is scaled by ``0.001`` inside :meth:`forward`
+        *and* then by ``0.1`` outside, in :class:`DistillationLoss`. The user-facing
+        "gamma" weight is the outer 0.1.
+    """
+
     def __init__(self, T=2):
         super(Sinkhorn_seq, self).__init__()
         self.T = 2   
@@ -42,11 +52,17 @@ class Sinkhorn_seq(nn.Module):
             x = x / torch.sum(x, dim=0, keepdim=True)
         return x
 
-    def sinkhorn_loss(self,x, y, epsilon=0.1, n_iters=10):
-        Wxy = torch.cdist(x, y, p=1)  
-        K = torch.exp(-Wxy / epsilon)  
-        P = self.sinkhorn_normalized(K, n_iters)  
-        return torch.sum(P * Wxy)  
+    def sinkhorn_loss(self, x, y, epsilon=0.1, n_iters=10, return_cost=False):
+        x = x.float()
+        y = y.float()
+        Wxy = torch.cdist(x, y, p=1)
+        K = torch.exp(-Wxy / epsilon)
+        P = self.sinkhorn_normalized(K, n_iters)
+        loss = torch.sum(P * Wxy)
+        if return_cost:
+            return loss, Wxy.detach()
+        return loss
+
     def forward(self, y_s, y_t):
         softmax = nn.Softmax(dim=-1)
         p_s = softmax(y_s/self.T)
@@ -55,6 +71,57 @@ class Sinkhorn_seq(nn.Module):
         for i in range(p_s.shape[0]):
             emd_loss += 0.001*self.sinkhorn_loss(x=p_s[i],y=p_t[i])
         return emd_loss
+
+    def forward_with_diagnostics(self, y_s, y_t, epsilon=0.1):
+        """Same numerical output as :meth:`forward`, plus per-batch Sinkhorn diagnostics.
+
+        Returns ``(emd_loss, diag)`` where ``diag`` is a dict with:
+          * ``sinkhorn_per_sample_raw_mean``: mean over the batch of the *unscaled*
+            Sinkhorn distance ``sum(P * C)`` (i.e. before the internal ``0.001`` and
+            before any external weighting). This is the purest "how far apart are
+            the two token distributions under the OT geometry" number.
+          * ``sinkhorn_batch_sum_scaled_001``: same as :meth:`forward` output,
+            i.e. ``sum_i 0.001 * sinkhorn_loss_i``. Kept for cross-checking the
+            returned loss tensor.
+          * ``sinkhorn_epsilon``: the ``epsilon`` used in ``K = exp(-C/epsilon)``.
+          * ``cost_mean`` / ``cost_max`` / ``cost_min``: statistics of the pairwise
+            L1 cost matrix ``C`` pooled across all batch items. Useful for
+            confirming whether ``C/epsilon`` is in the regime where Sinkhorn is
+            informative: if ``C`` values are << epsilon, ``K`` becomes nearly
+            uniform and the transport plan degenerates.
+        """
+        softmax = nn.Softmax(dim=-1)
+        p_s = softmax(y_s / self.T)
+        p_t = softmax(y_t / self.T)
+        emd_loss = 0
+        per_sample_raw = []
+        cost_means, cost_maxes, cost_mins = [], [], []
+        for i in range(p_s.shape[0]):
+            loss_i, C_i = self.sinkhorn_loss(
+                x=p_s[i], y=p_t[i], epsilon=epsilon, return_cost=True
+            )
+            emd_loss = emd_loss + 0.001 * loss_i
+            per_sample_raw.append(loss_i.detach())
+            cost_means.append(C_i.mean().item())
+            cost_maxes.append(C_i.max().item())
+            cost_mins.append(C_i.min().item())
+
+        if per_sample_raw:
+            raw_mean = float(torch.stack(per_sample_raw).mean().item())
+            batch_sum_scaled = float((0.001 * torch.stack(per_sample_raw)).sum().item())
+        else:
+            raw_mean = 0.0
+            batch_sum_scaled = 0.0
+
+        diag = {
+            "sinkhorn_per_sample_raw_mean": raw_mean,
+            "sinkhorn_batch_sum_scaled_001": batch_sum_scaled,
+            "sinkhorn_epsilon": float(epsilon),
+            "cost_mean": float(sum(cost_means) / max(1, len(cost_means))),
+            "cost_max": float(max(cost_maxes)) if cost_maxes else 0.0,
+            "cost_min": float(min(cost_mins)) if cost_mins else 0.0,
+        }
+        return emd_loss, diag
 
 def greedy_algorithm_adjust_s(t, s):
     batch_size, T, k = t.shape
@@ -329,14 +396,63 @@ class DistillationLoss(nn.Module):
         # Cross entropy loss
         crossentropy_loss = self.crossentropy_weight * student_predictions.loss
 
-        distillation_loss = torch.zeros(student.size(0), device=student.device) 
+        # --- Distillation loss components ---
+        # (1) L1 / OT-style component: per-sample |p_s - p_t| summed over vocab, averaged over tokens
+        l1_per_sample = torch.zeros(student.size(0), device=student.device)
         for i in range(student.size(0)):
             size = min(student_answer_size[i], teacher_answer_size[i])
-            distillation_loss[i] = abs(student[i][:size] - teacher[i][:size]).sum(-1).mean(-1) 
+            l1_per_sample[i] = abs(student[i][:size] - teacher[i][:size]).sum(-1).mean(-1)
+        l1_component = l1_per_sample.mean()
 
-        distillation_loss = distillation_loss + KL_wo(teacher,student)*0.1
-        distillation_loss = distillation_loss.mean() + sinkorn_loss(teacher,student)*0.1
-        distillation_loss = self.distillation_weight * (distillation_loss) * 1
+        # (2) KL-style component (scalar, weighted by 0.1 as in original formulation)
+        kl_component = KL_wo(teacher, student) * 0.1
+
+        # (3) Sinkhorn component. We run the *diagnostic* variant so that we can
+        # log the pre-weight-scaling raw LSD value and the cost-matrix statistics.
+        # The returned `sinkhorn_raw_tensor` is numerically identical to
+        # `sinkorn_loss(teacher, student)` (same operations, same order).
+        sinkhorn_epsilon = 0.1  # entropic-regularisation strength (paper: lambda)
+        sinkhorn_gamma = 0.1    # external weight applied in THIS file (paper: gamma)
+        sinkhorn_raw_tensor, sinkhorn_diag = sinkorn_loss.forward_with_diagnostics(
+            teacher, student, epsilon=sinkhorn_epsilon
+        )
+        sinkhorn_component = sinkhorn_raw_tensor * sinkhorn_gamma
+
+        # Capture pre-weight-scaling diagnostic values BEFORE applying
+        # self.distillation_weight, so we can see whether the raw OT distance
+        # itself is degenerate versus merely being down-weighted.
+        # Defensive: Sinkhorn_seq.forward_with_diagnostics returns int(0) when
+        # the batch is empty; fall back to 0.0 in that edge case.
+        if isinstance(sinkhorn_raw_tensor, torch.Tensor):
+            sinkhorn_raw_value = float(sinkhorn_raw_tensor.detach().item())
+        else:
+            sinkhorn_raw_value = float(sinkhorn_raw_tensor)
+
+        # Apply global distillation weight so components sum exactly to distillation_loss
+        l1_component = self.distillation_weight * l1_component
+        kl_component = self.distillation_weight * kl_component
+        sinkhorn_component = self.distillation_weight * sinkhorn_component
+
+        distillation_loss = l1_component + kl_component + sinkhorn_component
+
+        diagnostics = {
+            # Raw Sinkhorn value as returned by Sinkhorn_seq.forward: this is
+            # already a sum over the batch of (0.001 * per-sample Sinkhorn).
+            # "Before weight scaling" = before the * 0.1 gamma and before
+            # self.distillation_weight.
+            "sinkhorn_raw_value": sinkhorn_raw_value,
+            # Purer number: mean over batch of sum(P*C), with NO scaling applied.
+            "sinkhorn_per_sample_raw_mean": sinkhorn_diag["sinkhorn_per_sample_raw_mean"],
+            "sinkhorn_epsilon": sinkhorn_diag["sinkhorn_epsilon"],
+            "sinkhorn_gamma": sinkhorn_gamma,
+            "sinkhorn_distillation_weight": float(self.distillation_weight),
+            # Cost-matrix (C) statistics pooled across the batch, before any
+            # exp/normalisation. If cost_mean << epsilon, K is ~uniform and
+            # Sinkhorn transport is degenerate.
+            "cost_mean": sinkhorn_diag["cost_mean"],
+            "cost_max": sinkhorn_diag["cost_max"],
+            "cost_min": sinkhorn_diag["cost_min"],
+        }
 
         if self.debug and rank == self.debug_rank:
             print("--------------------------------------")
@@ -344,9 +460,25 @@ class DistillationLoss(nn.Module):
             print("--------------------------------------")
             print(f"Crossentropy loss: {crossentropy_loss}")
             print(f"Distillation loss: {distillation_loss}")
+            print(f"  L1/OT component:   {l1_component}")
+            print(f"  KL component:      {kl_component}")
+            print(f"  Sinkhorn comp.:    {sinkhorn_component}")
+            print(f"  [diag] sinkhorn raw (pre-gamma, pre-w): {sinkhorn_raw_value:.6e}")
+            print(f"  [diag] sinkhorn per-sample raw mean:    {diagnostics['sinkhorn_per_sample_raw_mean']:.6e}")
+            print(f"  [diag] cost C  mean={diagnostics['cost_mean']:.6e} "
+                  f"max={diagnostics['cost_max']:.6e} min={diagnostics['cost_min']:.6e} "
+                  f"(epsilon={sinkhorn_epsilon})")
             print(f"Total loss: {crossentropy_loss + distillation_loss}")
 
-        return crossentropy_loss + distillation_loss, crossentropy_loss, distillation_loss
+        return (
+            crossentropy_loss + distillation_loss,
+            crossentropy_loss,
+            distillation_loss,
+            l1_component,
+            kl_component,
+            sinkhorn_component,
+            diagnostics,
+        )
 
     def __get_start_and_size_answers(self, answer_tensors):
         answers_index = []

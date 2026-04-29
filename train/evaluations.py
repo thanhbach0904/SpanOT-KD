@@ -70,7 +70,7 @@ def evaluation(epoch, model, train_config, distil_config, eval_dataloader, steps
 
             if train_config.distillation:
                 outputs, teacher_output = model(**batch)
-                loss, cross_loss, dist_loss = distillation_loss(epoch, outputs, teacher_output, batch['student_labels'], batch['teacher_labels'])
+                loss, cross_loss, dist_loss, *_components = distillation_loss(epoch, outputs, teacher_output, batch['student_labels'], batch['teacher_labels'])
                 eval_cross_loss += cross_loss.detach().float()
                 eval_dist_loss += dist_loss.detach().float()
             else:

@@ -160,6 +160,7 @@ if __name__ == "__main__":
     logging.info('Predictions finished')
 
     logging.info('Computing scores...')
+    dataset.reset_format()
     if isinstance(dataset['answer'][0], dict): answers = [item[args.mapping_dict] for item in dataset['answer']]
     elif isinstance(dataset['answer'][0][0], dict): answers = [item[0][args.mapping_dict] for item in dataset['answer']]
     else: answers = dataset['answer']

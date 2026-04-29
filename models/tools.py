@@ -2,7 +2,7 @@ import torch
 import torch.cuda.nccl as nccl
 import torch.distributed as dist
 
-from pkg_resources import packaging
+import packaging.version
 from policies import fpSixteen, bfSixteen, get_wrapper
 
 def get_parameter_dtypes(model):

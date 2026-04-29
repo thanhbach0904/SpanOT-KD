@@ -33,6 +33,9 @@ def parse_args():
     parser.add_argument("--distillation_config_distil_factor", type=float, default=1.5, help="Distillation factor")
     parser.add_argument("--save_step", type=int, default=100, help="Save step")
     parser.add_argument("--f", type=int, default=1, help="method")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--debug_tokenization", action="store_true", help="Run tokenization alignment check on a few batches then exit")
+    parser.add_argument("--debug_max_batches", type=int, default=2, help="Number of batches to check when --debug_tokenization is set")
     return parser.parse_args()
 
 def main():
@@ -62,18 +65,65 @@ def main():
 
     # Load Model and Tokenizer
     if train_config.distillation:
-        distil_config.model_name = args.distillation_config_model_name  
-        student_tokenizer, teacher_tokenizer, model = get_distillation_models(train_config, distil_config, fsdp_config, rank, vars(args))
+        distil_config.model_name = args.distillation_config_model_name
+        distil_config.pure_bf16 = args.distillation_config_pure_bf16
+        distil_config.enable_fsdp = args.distillation_config_enable_fsdp
+        distil_config.distil_factor = args.distillation_config_distil_factor
+        student_tokenizer, teacher_tokenizer, model = get_distillation_models(
+            train_config, distil_config, fsdp_config, rank, vars(args)
+        )
     else:
         tokenizer, model = get_model(train_config, fsdp_config, rank, vars(args))
     if rank == 0: print(model)
+    if rank == 0: print("[checkpoint] models loaded OK", flush=True)
 
     # Load Data
     data_config.encoder_decoder = train_config.encoder_decoder
+    if rank == 0: print("[checkpoint] starting data loading...", flush=True)
     if train_config.distillation:
         train_dataloader, teacher_train_dataloader, eval_dataloader, teacher_eval_dataloader = get_distillation_dataloader(data_config, train_config, distil_config, student_tokenizer, teacher_tokenizer, rank)
     else:
         train_dataloader, eval_dataloader = get_dataloader(data_config, train_config, tokenizer, rank)
+    if rank == 0: print(f"[checkpoint] data loaded OK — train batches: {len(train_dataloader)}", flush=True)
+
+    if args.debug_tokenization and train_config.distillation:
+        import sys
+        from models.distillation_model import preprocess_distillation_batch
+        from train.span_match import compute_single_sample_rates, SpanMatchEvaluator
+
+        device = f"cuda:{local_rank}" if (train_config.enable_fsdp or distil_config.enable_fsdp) else "cuda:0"
+        model.student.eval()
+        print(f"[debug_tokenization] Checking {args.debug_max_batches} batch(es) then exiting.", flush=True)
+        with torch.no_grad():
+            for batch_idx, batch_pair in enumerate(zip(train_dataloader, teacher_train_dataloader)):
+                if batch_idx >= args.debug_max_batches:
+                    break
+                batch = preprocess_distillation_batch(batch_pair)
+                batch = {k: v.to(device) for k, v in batch.items()}
+                student_out, teacher_out = model(**batch)
+                s_starts, s_sizes = SpanMatchEvaluator._extract_answer_spans(batch["student_labels"])
+                t_starts, t_sizes = SpanMatchEvaluator._extract_answer_spans(batch["teacher_labels"])
+                print(f"[batch={batch_idx}] student_labels shape={list(batch['student_labels'].shape)}, "
+                      f"s_sizes={s_sizes}, t_sizes={t_sizes}", flush=True)
+                for i in range(batch["student_labels"].size(0)):
+                    ss, se = s_starts[i], s_sizes[i]
+                    ts, te = t_starts[i], t_sizes[i]
+                    if se <= 0 or te <= 0:
+                        print(f"  sample={i}: se={se}, te={te} — skipping (no answer tokens)", flush=True)
+                        continue
+                    s_pred_ids = torch.argmax(student_out.logits[i, ss:ss + se, :], dim=-1).cpu().tolist()
+                    t_pred_ids = torch.argmax(teacher_out.logits[i, ts:ts + te, :], dim=-1).cpu().tolist()
+                    raw_labels = batch["student_labels"][i]
+                    answer_token_ids = raw_labels[raw_labels != -100].cpu().tolist()
+                    answer_text = student_tokenizer.decode(answer_token_ids, skip_special_tokens=True)
+                    print(f"\n[batch={batch_idx} sample={i}] answer_text={answer_text!r}", flush=True)
+                    compute_single_sample_rates(
+                        s_pred_ids, t_pred_ids, answer_text,
+                        student_tokenizer, teacher_tokenizer,
+                        debug=True,
+                    )
+        print("[debug_tokenization] Done. Exiting.", flush=True)
+        sys.exit(0)
 
     # Get the optimizer and learning rate scheduler
     optimizer = get_optimizer(model, train_config, fsdp_config)

@@ -1,0 +1,24 @@
+# Model weights (download separately on cloud)
+EleutherAI/
+
+# Training outputs
+output_*/
+eval_results/
+
+# Dataset caches
+llm_distillation/datasets/processed/*/cache-*.arrow
+llm_distillation/benchmark/results/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs and temp
+*.log
+/tmp/

@@ -63,7 +63,7 @@ if __name__ == "__main__":
     parser.add_argument("--seq2seq", action="store_true", help="For encoder-decoder model")
     args = parser.parse_args()
 
-    if 'chat' in args.model_id.split('/n')[:-2] or "instruct" in args.model_id.lower().split('/n')[:-2]:
+    if 'chat' in args.model_id.lower() or "instruct" in args.model_id.lower().split('/n')[:-2]:
         from prompt.prompt import create_chat_prompt as create_prompt
         is_chat = True
     else :
@@ -145,13 +145,13 @@ if __name__ == "__main__":
     else: dataset = load_dataset(args.dataset_id, split=args.split_name)
     if args.mapping: dataset = mapping(args.mapping, dataset)
     has_title = True if 'title' in dataset.column_names and args.title else False
+    if 'question_text' in dataset.column_names and 'question' not in dataset.column_names:
+        dataset = dataset.rename_column('question_text', 'question')
     dataset = dataset.map(lambda item: create_prompt_column(args.task, args.number_few_shot, item, has_title))
     dataset = dataset.map(lambda items: tokenization(items, tokenizer=tokenizer), batched=True, batch_size=args.batch_size)
     dataset = dataset.filter(lambda item: len(item['input_ids']) <= args.context_length) if args.context_length else dataset
     #print(args.model_id)
     #print(dataset['prompt'][0])
-    dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers)
     logging.info('Dataset processed...')
     #print(dataset['original_nq_answers'][0])
     #print(dataset['original_nq_answers'][:][0])
@@ -164,7 +164,13 @@ if __name__ == "__main__":
     predictions = []
     # answers = [item['string'] for sublist in dataset['original_nq_answers'] for item in sublist if 'string' in item]
     # j = 0 
-    answers = [sublist[0]['string'] for sublist in dataset['original_nq_answers'] if sublist and 'string' in sublist[0]]
+    answers = [
+        sublist[0]['string']
+        for sublist in dataset['original_nq_answers']
+        if sublist and isinstance(sublist[0], dict) and 'string' in sublist[0]
+    ]
+    dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers)
     # answers = answers[0:2]
     # for i in range(100):
     #     print(answers[i])

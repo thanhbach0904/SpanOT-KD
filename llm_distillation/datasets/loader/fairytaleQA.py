@@ -61,6 +61,6 @@ def tokenize(item, tokenizer):
 def get_split(dataset_config, tokenizer, split):
     dataset = load_from_disk(f"{os.getenv('HOME')}/Multi-Level-OT/llm_distillation/datasets/hf/uld_loss_Llama-2-7b-chat-hf-FairytaleQA/fairytaleQA")
     dataset = dataset[split]
-    if dataset_config.size < 1: dataset = dataset.select(range(int(len(dataset)*dataset_config.size)))
+    if dataset_config.training_size < 1: dataset = dataset.select(range(int(len(dataset)*dataset_config.training_size)))
     dataset = dataset.map(lambda item: tokenize(item, tokenizer), remove_columns=list(dataset.features))
     return dataset

@@ -35,8 +35,10 @@ def load_tokenizer(name, encoder_decoder):
         tokenizer.pad_token_id = tokenizer.eos_token_id
     return tokenizer
 
-def load_model(train_config, rank):
+def load_model(train_config, rank, fsdp_config=None):
     use_cache = False if train_config.enable_fsdp else True
+    bf16 = getattr(fsdp_config, "pure_bf16", False)
+    dtype = torch.bfloat16 if bf16 else None
     def load():
         if "mt0" in train_config.model_name:
             return MT5ForConditionalGeneration.from_pretrained(
@@ -44,6 +46,7 @@ def load_model(train_config, rank):
                 load_in_8bit=True if train_config.quantization else False,
                 device_map="auto" if train_config.quantization else None,
                 use_cache=use_cache,
+                torch_dtype=dtype,
             )
         elif "Qwen" in train_config.model_name:
             return AutoModelForCausalLM.from_pretrained(
@@ -55,14 +58,14 @@ def load_model(train_config, rank):
                 trust_remote_code=True,
             )
         else:
-            return AutoModelForCausalLM.from_pretrained(
+             return AutoModelForCausalLM.from_pretrained(
                 train_config.model_name,
                 load_in_8bit=True if train_config.quantization else False,
                 device_map="auto" if train_config.quantization else None,
                 use_cache=use_cache,
                 trust_remote_code=True,
+                torch_dtype=dtype,
             )
-    
     if not train_config.enable_fsdp:
         model = load()
         
@@ -128,7 +131,7 @@ def set_model(model, train_config, fsdp_config, rank, kwargs):
             return model.to(f"cuda:{rank}")
 
 def get_model(train_config, fsdp_config, rank, kwargs):
-    model = load_model(train_config, rank)
+    model = load_model(train_config, rank, fsdp_config)
     model = set_model(model, train_config, fsdp_config, rank, kwargs)
     tokenizer = load_tokenizer(train_config.model_name, train_config.encoder_decoder)
     tokenizer.pad_token_id = tokenizer.eos_token_id
