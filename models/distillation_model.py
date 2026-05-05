@@ -26,11 +26,23 @@ def normalize(value):
     z_score_normalized_student = (value)/ (stds+0.0001)
     return z_score_normalized_student
 
-def KL_wo(y_s, y_t,T=1):
+def KL_wo(y_s, y_t, T=1, position_weights=None):
+    """KL/SL-style cross-entropy term used as the SL component of MultiLevelOT.
+
+    Inputs ``y_s``, ``y_t`` are shape ``(B, T, V)``. The vanilla
+    formulation averages ``-sum(t * log s)`` over both batch and token
+    positions. When ``position_weights`` (shape ``(B, T)``) is provided,
+    each position's contribution is multiplied by its weight before the
+    mean — this implements Eq. 15 of SpanOT-KD (the SL component
+    summed over positions then weighted per Eq. 14). ``None`` recovers
+    the original behaviour exactly.
+    """
     p_s = F.log_softmax(y_s/T, dim=-1)
     p_t = F.softmax(y_t/T, dim=-1)
-    loss = -torch.sum(p_t * p_s, dim=-1).mean()
-    return loss
+    per_pos = -torch.sum(p_t * p_s, dim=-1)  # (B, T)
+    if position_weights is not None:
+        per_pos = per_pos * position_weights.to(per_pos.dtype)
+    return per_pos.mean()
 
 class Sinkhorn_seq(nn.Module):
     """Sequence-level Sinkhorn OT distance between two probability tensors.
@@ -45,34 +57,57 @@ class Sinkhorn_seq(nn.Module):
 
     def __init__(self, T=2):
         super(Sinkhorn_seq, self).__init__()
-        self.T = 2   
+        self.T = 2
     def sinkhorn_normalized(self,x, n_iters=20):
         for _ in range(n_iters):
             x = x / torch.sum(x, dim=1, keepdim=True)
             x = x / torch.sum(x, dim=0, keepdim=True)
         return x
 
-    def sinkhorn_loss(self, x, y, epsilon=0.1, n_iters=10, return_cost=False):
+    def sinkhorn_loss(self, x, y, epsilon=0.1, n_iters=10, return_cost=False, row_weights=None):
+        """Sinkhorn OT loss with optional row-wise weighting (SpanOT-KD).
+
+        ``row_weights`` (Tensor of shape ``(T,)`` or None) implements the
+        position-pair weight matrix ``W_ij = omega(i)`` from Eq. 16 of the
+        SpanOT-KD methodology: the weight is applied **only after** the
+        Sinkhorn normalisation, so the transport plan ``P`` is the same as
+        in vanilla MultiLevelOT and only the loss aggregation changes.
+        Passing ``None`` (or all-ones) yields byte-for-byte identical
+        numerics to the original implementation.
+        """
         x = x.float()
         y = y.float()
         Wxy = torch.cdist(x, y, p=1)
         K = torch.exp(-Wxy / epsilon)
         P = self.sinkhorn_normalized(K, n_iters)
-        loss = torch.sum(P * Wxy)
+        product = P * Wxy
+        if row_weights is not None:
+            # Eq. 16: W_ij = omega(i) — row weight broadcast over columns.
+            # Float-cast guards against fp16 underflow of small mu*delta values.
+            product = product * row_weights.to(product.dtype).unsqueeze(1)
+        loss = torch.sum(product)
         if return_cost:
             return loss, Wxy.detach()
         return loss
 
-    def forward(self, y_s, y_t):
+    def forward(self, y_s, y_t, row_weights=None):
+        """Sequence-level Sinkhorn loss summed over the batch.
+
+        ``row_weights`` (Tensor of shape ``(B, T)`` or None) is the
+        per-sample, per-(teacher-)position weight from SpanOT-KD. It is
+        forwarded to :meth:`sinkhorn_loss` for each batch index. ``None``
+        recovers the original behaviour exactly.
+        """
         softmax = nn.Softmax(dim=-1)
         p_s = softmax(y_s/self.T)
         p_t = softmax(y_t/self.T)
         emd_loss = 0
         for i in range(p_s.shape[0]):
-            emd_loss += 0.001*self.sinkhorn_loss(x=p_s[i],y=p_t[i])
+            rw = row_weights[i] if row_weights is not None else None
+            emd_loss += 0.001*self.sinkhorn_loss(x=p_s[i], y=p_t[i], row_weights=rw)
         return emd_loss
 
-    def forward_with_diagnostics(self, y_s, y_t, epsilon=0.1):
+    def forward_with_diagnostics(self, y_s, y_t, epsilon=0.1, row_weights=None):
         """Same numerical output as :meth:`forward`, plus per-batch Sinkhorn diagnostics.
 
         Returns ``(emd_loss, diag)`` where ``diag`` is a dict with:
@@ -97,8 +132,10 @@ class Sinkhorn_seq(nn.Module):
         per_sample_raw = []
         cost_means, cost_maxes, cost_mins = [], [], []
         for i in range(p_s.shape[0]):
+            rw = row_weights[i] if row_weights is not None else None
             loss_i, C_i = self.sinkhorn_loss(
-                x=p_s[i], y=p_t[i], epsilon=epsilon, return_cost=True
+                x=p_s[i], y=p_t[i], epsilon=epsilon, return_cost=True,
+                row_weights=rw,
             )
             emd_loss = emd_loss + 0.001 * loss_i
             per_sample_raw.append(loss_i.detach())
@@ -252,7 +289,8 @@ class DistillationModel2(nn.Module):
 
 
 class DistillationLoss(nn.Module):
-    def __init__(self, batch_limit=100, store_path='teacher_logits_partial.npy', crossentropy_weight=1, distillation_weight=1, student_temperature=1, teacher_temperature=1, skip_student_eos=False, skip_teacher_eos=False, ignore_index=-100, debug=False, debug_rank=0, tokenizer_student=None, tokenizer_teacher=None, f=1):
+    def __init__(self, batch_limit=100, store_path='teacher_logits_partial.npy', crossentropy_weight=1, distillation_weight=1, student_temperature=1, teacher_temperature=1, skip_student_eos=False, skip_teacher_eos=False, ignore_index=-100, debug=False, debug_rank=0, tokenizer_student=None, tokenizer_teacher=None, f=1,
+                 span_kd_enabled=False, span_aggregation="mean", span_top_r=0.5, span_low_delta=0.1):
         super().__init__()
         self.crossentropy_weight = crossentropy_weight
         self.distillation_weight = distillation_weight
@@ -264,7 +302,35 @@ class DistillationLoss(nn.Module):
         self.debug_rank = debug_rank
         self.debug = debug
         self.f = f
-        
+
+        # SpanOT-KD configuration. When `span_kd_enabled` is False, the
+        # forward pass is byte-for-byte identical to the original
+        # MultiLevelOT objective. When True, we compute a per-sample,
+        # per-position weight tensor (see train.span_ot) and multiply it
+        # into the HAD, SL, and SD components per Eqs. 15-17 of the
+        # SpanOT-KD methodology.
+        self.span_kd_enabled = span_kd_enabled
+        self.span_aggregation = span_aggregation
+        self.span_top_r = float(span_top_r)
+        self.span_low_delta = float(span_low_delta)
+        # Tokenisers are required to identify aligned spans (character-level
+        # alignment between the student and teacher tokenisations of the
+        # ground-truth answer). Loaded eagerly here so the SpanOT path does
+        # not pay a per-step from_pretrained cost. They are also loaded
+        # under `debug=True` for the existing diagnostic prints, so we
+        # consolidate both code paths into one `if needed` branch.
+        self.student_tokenizer = None
+        self.teacher_tokenizer = None
+        need_tokenisers = self.debug or self.span_kd_enabled
+        if need_tokenisers and tokenizer_student is not None:
+            self.student_tokenizer = AutoTokenizer.from_pretrained(
+                tokenizer_student, trust_remote_code=True
+            )
+        if need_tokenisers and tokenizer_teacher is not None:
+            self.teacher_tokenizer = AutoTokenizer.from_pretrained(
+                tokenizer_teacher, trust_remote_code=True
+            )
+
         self.store_teacher_logits = True
         self.batch_limit = batch_limit  # 设定每100个样本保存一次
         self.store_path = store_path
@@ -281,9 +347,11 @@ class DistillationLoss(nn.Module):
             print(f"Ignore index: {ignore_index}")
             print(f"Debug: {debug}")
             print(f"Debug rank: {debug_rank}")
-
-            self.student_tokenizer = AutoTokenizer.from_pretrained(tokenizer_student,trust_remote_code=True)
-            self.teacher_tokenizer = AutoTokenizer.from_pretrained(tokenizer_teacher,trust_remote_code=True)
+        if self.span_kd_enabled:
+            print(
+                f"[SpanOT-KD] enabled — aggregation={self.span_aggregation}, "
+                f"top_r={self.span_top_r}, low_delta={self.span_low_delta}"
+            )
 
     def forward(self, epoch, student_predictions, teacher_predictions, student_targets, teacher_targets, rank=0):
         student = student_predictions.logits
@@ -396,25 +464,72 @@ class DistillationLoss(nn.Module):
         # Cross entropy loss
         crossentropy_loss = self.crossentropy_weight * student_predictions.loss
 
+        # --- SpanOT-KD: compute per-position weight tensor ---
+        # When span KD is disabled, `position_weights` stays `None` and the
+        # loss reduces exactly to the original MultiLevelOT objective.
+        # When enabled, `position_weights` has shape (B, T_max). For each
+        # sample we identify aligned spans between the student/teacher
+        # tokenisations of the ground-truth answer text, compute the
+        # per-token entropy gap g(t) = H(s_t) - H(t_t) on the truncated
+        # top-k distributions just produced above, aggregate per span
+        # (mean or sum), partition the spans by top-r%, and assign
+        # mu in {1.0, delta} to matched positions while leaving
+        # non-matched positions at 1.0. See train/span_ot.py and Eqs.
+        # 9-14 of the SpanOT-KD methodology.
+        position_weights = None
+        if self.span_kd_enabled and self.student_tokenizer is not None and self.teacher_tokenizer is not None:
+            from train.span_ot import compute_batch_position_weights
+            position_weights = compute_batch_position_weights(
+                student_probs=student.detach(),
+                teacher_probs=teacher.detach(),
+                student_sizes=student_answer_size,
+                teacher_sizes=teacher_answer_size,
+                student_labels=student_targets,
+                teacher_labels=teacher_targets,
+                student_tokenizer=self.student_tokenizer,
+                teacher_tokenizer=self.teacher_tokenizer,
+                top_r=self.span_top_r,
+                low_delta=self.span_low_delta,
+                aggregation=self.span_aggregation,
+                ignore_index=self.ignore_index,
+            )
+
         # --- Distillation loss components ---
-        # (1) L1 / OT-style component: per-sample |p_s - p_t| summed over vocab, averaged over tokens
+        # (1) L1 / OT-style component: per-sample |p_s - p_t| summed over vocab, averaged over tokens.
+        # SpanOT-KD weights each token-position contribution by omega(t) before the
+        # length-mean (Eq. 15 of the methodology, decomposed as Eq. 15b for
+        # matched/non-matched regions). Non-matched positions retain unit
+        # weight, so the original behaviour is preserved on positions outside
+        # any aligned span. With `position_weights=None` the math reduces
+        # exactly to the original `.sum(-1).mean(-1)` formulation.
         l1_per_sample = torch.zeros(student.size(0), device=student.device)
         for i in range(student.size(0)):
             size = min(student_answer_size[i], teacher_answer_size[i])
-            l1_per_sample[i] = abs(student[i][:size] - teacher[i][:size]).sum(-1).mean(-1)
+            if size <= 0:
+                continue
+            per_pos_l1 = abs(student[i][:size] - teacher[i][:size]).sum(-1)  # (size,)
+            if position_weights is not None:
+                w_i = position_weights[i, :size].to(per_pos_l1.dtype)
+                per_pos_l1 = per_pos_l1 * w_i
+            l1_per_sample[i] = per_pos_l1.mean()
         l1_component = l1_per_sample.mean()
 
-        # (2) KL-style component (scalar, weighted by 0.1 as in original formulation)
-        kl_component = KL_wo(teacher, student) * 0.1
+        # (2) KL/SL-style component (scalar, weighted by 0.1 as in original formulation).
+        # SpanOT-KD: position-level weights are passed into KL_wo so each
+        # token's CE contribution is scaled before the batch+position mean
+        # (Eq. 16 with `omega(t)` applied per (B, T) position).
+        kl_component = KL_wo(teacher, student, position_weights=position_weights) * 0.1
 
-        # (3) Sinkhorn component. We run the *diagnostic* variant so that we can
-        # log the pre-weight-scaling raw LSD value and the cost-matrix statistics.
-        # The returned `sinkhorn_raw_tensor` is numerically identical to
-        # `sinkorn_loss(teacher, student)` (same operations, same order).
+        # (3) Sinkhorn (Sequence Distance) component. SpanOT-KD applies row-wise
+        # weighting AFTER the Sinkhorn normalisation (Eq. 17): the transport
+        # plan P stays identical to vanilla MultiLevelOT and only the loss
+        # aggregation `sum_{i,j} W_{ij} * P_{ij} * C^seq_{ij}` is reweighted.
+        # `position_weights` (B, T) is broadcast to (B, T, T) row-wise inside
+        # `Sinkhorn_seq.sinkhorn_loss`.
         sinkhorn_epsilon = 0.1  # entropic-regularisation strength (paper: lambda)
         sinkhorn_gamma = 0.1    # external weight applied in THIS file (paper: gamma)
         sinkhorn_raw_tensor, sinkhorn_diag = sinkorn_loss.forward_with_diagnostics(
-            teacher, student, epsilon=sinkhorn_epsilon
+            teacher, student, epsilon=sinkhorn_epsilon, row_weights=position_weights,
         )
         sinkhorn_component = sinkhorn_raw_tensor * sinkhorn_gamma
 
@@ -452,7 +567,28 @@ class DistillationLoss(nn.Module):
             "cost_mean": sinkhorn_diag["cost_mean"],
             "cost_max": sinkhorn_diag["cost_max"],
             "cost_min": sinkhorn_diag["cost_min"],
+            # SpanOT-KD diagnostics. When span KD is disabled these are
+            # constant placeholders so downstream code can read them
+            # unconditionally without branching.
+            "span_kd_enabled": bool(self.span_kd_enabled),
+            "span_top_r": float(self.span_top_r),
+            "span_low_delta": float(self.span_low_delta),
+            "span_aggregation": str(self.span_aggregation),
         }
+        if position_weights is not None:
+            # Fraction of (B, T_max) positions that are downweighted vs at unit
+            # weight — useful sanity check that `top_r` is producing a non-trivial
+            # partition. Positions strictly < 1.0 are low-priority spans (delta);
+            # positions == 1.0 are either high-priority or non-matched.
+            with torch.no_grad():
+                w = position_weights
+                low_frac = float((w < 1.0).float().mean().item())
+                mean_w = float(w.mean().item())
+            diagnostics["span_low_weight_frac"] = low_frac
+            diagnostics["span_position_weight_mean"] = mean_w
+        else:
+            diagnostics["span_low_weight_frac"] = 0.0
+            diagnostics["span_position_weight_mean"] = 1.0
 
         if self.debug and rank == self.debug_rank:
             print("--------------------------------------")

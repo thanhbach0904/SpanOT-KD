@@ -247,9 +247,28 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
             }
         )
 
-    # Init distillation loss if distillation is enabled
+    # Init distillation loss if distillation is enabled.
+    # SpanOT-KD knobs (`span_kd_enabled`, `span_aggregation`, `span_top_r`,
+    # `span_low_delta`) are read off `distil_config` and forwarded into
+    # the loss. They default to MultiLevelOT-equivalent values, so a run
+    # that does not set the SpanOT flags is byte-for-byte identical to
+    # the previous behaviour.
     if train_config.distillation:
-        distillation_loss = DistillationLoss(distillation_weight=distil_config.distil_factor, student_temperature=distil_config.student_temperature, teacher_temperature=distil_config.teacher_temperature, skip_student_eos=True, debug=False, debug_rank=0, tokenizer_student=model.student.name_or_path, tokenizer_teacher=model.teacher.name_or_path, f=f)
+        distillation_loss = DistillationLoss(
+            distillation_weight=distil_config.distil_factor,
+            student_temperature=distil_config.student_temperature,
+            teacher_temperature=distil_config.teacher_temperature,
+            skip_student_eos=True,
+            debug=False,
+            debug_rank=0,
+            tokenizer_student=model.student.name_or_path,
+            tokenizer_teacher=model.teacher.name_or_path,
+            f=f,
+            span_kd_enabled=getattr(distil_config, "span_kd_enabled", False),
+            span_aggregation=getattr(distil_config, "span_aggregation", "mean"),
+            span_top_r=getattr(distil_config, "span_top_r", 0.5),
+            span_low_delta=getattr(distil_config, "span_low_delta", 0.1),
+        )
 
     # Span-match evaluator (opt-in via SPAN_MATCH_EVAL=1).
     # Set SPAN_MATCH_MAX_BATCHES=N to cap the number of batches per evaluation
@@ -479,6 +498,15 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                             "diag/cost_mean":                   cost_mean,
                             "diag/cost_max":                    cost_max,
                             "diag/cost_min":                    cost_min,
+                            # SpanOT-KD diagnostics: tells you what fraction of
+                            # token positions were down-weighted (delta) vs at
+                            # unit weight. If `span_low_weight_frac` is ~0 then
+                            # `top_r` is too permissive; if it's ~1 then
+                            # `top_r` is too aggressive and hardly any spans
+                            # are getting full weight.
+                            "diag/span_kd_enabled":             int(diag.get("span_kd_enabled", False)),
+                            "diag/span_low_weight_frac":        float(diag.get("span_low_weight_frac", 0.0)),
+                            "diag/span_position_weight_mean":   float(diag.get("span_position_weight_mean", 1.0)),
                             "teacher_loss": teacher_output.loss.detach().float(),
                             "lr": optimizer.param_groups[0]['lr'],
                             "grad_probe_ran": int(ran_grad_probe),

@@ -36,6 +36,18 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--debug_tokenization", action="store_true", help="Run tokenization alignment check on a few batches then exit")
     parser.add_argument("--debug_max_batches", type=int, default=2, help="Number of batches to check when --debug_tokenization is set")
+
+    # SpanOT-KD: span-selective extension of MultiLevelOT (see
+    # train/span_ot.py). When `--span_kd_enabled` is omitted the run is
+    # byte-for-byte identical to vanilla MultiLevelOT.
+    parser.add_argument("--distillation_config_span_kd_enabled", action="store_true",
+                        help="Enable SpanOT-KD: span-selective per-token weighting of HAD/SL/SD (default: off, recovers MultiLevelOT)")
+    parser.add_argument("--distillation_config_span_aggregation", type=str, default="mean", choices=["mean", "sum"],
+                        help="Per-span entropy-gap aggregation: 'mean' (Eq. 10) or 'sum' (Eq. 11)")
+    parser.add_argument("--distillation_config_span_top_r", type=float, default=0.5,
+                        help="Fraction of spans (sorted by entropy gap) deemed high-priority. r=1.0 collapses to MultiLevelOT")
+    parser.add_argument("--distillation_config_span_low_delta", type=float, default=0.1,
+                        help="Down-weight applied to non-top-r spans. Methodology recommends (0, 0.1]. delta=1.0 collapses to MultiLevelOT")
     return parser.parse_args()
 
 def main():
@@ -69,6 +81,12 @@ def main():
         distil_config.pure_bf16 = args.distillation_config_pure_bf16
         distil_config.enable_fsdp = args.distillation_config_enable_fsdp
         distil_config.distil_factor = args.distillation_config_distil_factor
+        # SpanOT-KD knobs are surfaced via CLI but applied here so they show
+        # up in the same place as the rest of the distillation config.
+        distil_config.span_kd_enabled = args.distillation_config_span_kd_enabled
+        distil_config.span_aggregation = args.distillation_config_span_aggregation
+        distil_config.span_top_r = args.distillation_config_span_top_r
+        distil_config.span_low_delta = args.distillation_config_span_low_delta
         student_tokenizer, teacher_tokenizer, model = get_distillation_models(
             train_config, distil_config, fsdp_config, rank, vars(args)
         )
