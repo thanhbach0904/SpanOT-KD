@@ -87,6 +87,14 @@ def main():
         distil_config.span_aggregation = args.distillation_config_span_aggregation
         distil_config.span_top_r = args.distillation_config_span_top_r
         distil_config.span_low_delta = args.distillation_config_span_low_delta
+        if rank == 0:
+            if distil_config.span_kd_enabled:
+                print("[SpanOT-KD] ENABLED", flush=True)
+                print(f"  span_aggregation : {distil_config.span_aggregation}", flush=True)
+                print(f"  span_top_r       : {distil_config.span_top_r}", flush=True)
+                print(f"  span_low_delta   : {distil_config.span_low_delta}", flush=True)
+            else:
+                print("[SpanOT-KD] disabled (vanilla MultiLevelOT)", flush=True)
         student_tokenizer, teacher_tokenizer, model = get_distillation_models(
             train_config, distil_config, fsdp_config, rank, vars(args)
         )
