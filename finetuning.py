@@ -70,6 +70,9 @@ def main():
         rank = int(os.environ["RANK"])
     else: rank = 0
 
+    if rank == 0:
+        print(f"[seed] {train_config.seed}", flush=True)
+
     if torch.distributed.is_initialized():
         torch.cuda.set_device(local_rank)
         clear_gpu_cache(local_rank)
