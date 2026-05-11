@@ -14,26 +14,46 @@ Pipeline (per sample, per training step):
     :func:`train.span_match.find_parent_token`. A span is the minimal
     character range whose boundaries are respected by both tokenisations
     (Definition 1 of the methodology).
-2.  Compute the **per-token entropy gap**
-    ``g(t) = H(s^k_t) - H(t^k_t)`` from the truncated top-k distributions
-    that MultiLevelOT already produces (Eq. 8-9).
-3.  Aggregate per span: either ``mean`` over teacher tokens in the span
-    (Eq. 10) or ``sum`` (Eq. 11). The teacher side is canonical because the
-    methodology indexes loss rows by teacher position (see Eq. 16).
-4.  Sort spans by aggregated gap, designate the top ``r%`` as
-    high-priority (weight ``1.0``); the rest are low-priority (weight
-    ``delta``). This is Eq. 12-13.
+2.  Compute **per-token entropies** on each side from the truncated top-k
+    distributions that MultiLevelOT already produces:
+    ``H_s[i] = H(s^k_i)`` for student row ``i`` and
+    ``H_t[j] = H(t^k_j)`` for teacher row ``j``.
+3.  Aggregate **on each side separately** within a span, then take the
+    difference at the span level (Eq. 9-11 of the methodology, applied
+    per-side rather than per-row):
+        g(S_m) = agg_{i in Q(S_m)} H_s[i]  -  agg_{j in T(S_m)} H_t[j]
+    where ``Q(S_m)`` are the student rows in the span and ``T(S_m)`` are
+    the teacher rows. ``agg`` is either mean (length-normalised; default)
+    or sum (accumulated; ablation only).
+
+    Why per-side, not per-row: the student-side row ``i`` and the teacher-
+    side row ``i`` index different tokenisations and therefore predict
+    different character spans of the same answer string. Subtracting
+    ``H_s[i] - H_t[i]`` at a shared row index is only meaningful when the
+    two tokenisations coincide, which is precisely what the cross-tokenizer
+    setting rules out. Per-side aggregation respects the span structure:
+    both sides aggregate over **their own** rows of the span before any
+    cross-side comparison.
+4.  Sort spans by ``g(S_m)``, designate the top ``r%`` as high-priority
+    (weight ``1.0``); the rest are low-priority (weight ``delta``). This
+    is Eq. 12-13.
 5.  Build a per-position weight vector ``omega[t]`` of length ``T_max``:
-       * ``mu(span)``         if teacher position ``t`` falls in any span
-                              (matched region)
-       * ``1.0``              otherwise (non-matched region)
-    This is Eq. 14.
+       * ``mu(span(t))``     if teacher position ``t`` falls in any aligned span
+       * ``1.0``              otherwise (safe fallback only — see below)
+    This is Eq. 14 of the methodology.
 
 The returned weight tensor has shape ``(B, T_max)`` and is consumed by
 ``DistillationLoss`` to produce the span-weighted HAD / SL / SD components.
 When ``top_r >= 1.0`` or ``low_delta == 1.0`` the weights collapse to all
-ones and the loss reduces *exactly* to the original MultiLevelOT objective —
-verified by inspection of Eq. 17 of the methodology.
+ones and the loss reduces *exactly* to the original MultiLevelOT objective.
+
+**A note on aggregation choice.** Under per-side aggregation, ``mean`` and
+``sum`` are no longer just amplification-of-long-spans choices: ``sum``
+introduces a systematic bias toward the side with more tokens whenever
+|Q(S_m)| != |T(S_m)|, which is the normal case in cross-tokenizer settings.
+``mean`` length-normalises each side independently and is recommended as
+the default; ``sum`` is retained only so the methodology's two aggregation
+variants remain ablate-able.
 
 Edge cases (all return all-ones weights, recovering MultiLevelOT):
   * empty / blank answer text;
@@ -100,6 +120,27 @@ def _safe_offset_map(
     return [(int(s), int(e)) for s, e in offsets if s != e]
 
 
+def _aggregate(values: torch.Tensor, mode: str) -> float:
+    """Aggregate a 1-D tensor of entropies on one side of a span.
+
+    ``mode`` is ``"mean"`` (default in the methodology, recommended in the
+    cross-tokenizer setting because it length-normalises each side
+    independently) or ``"sum"`` (retained for ablation; introduces a
+    systematic bias toward the side with more tokens in the span).
+
+    The empty-tensor case is guarded upstream — callers only invoke this
+    when both Q(S_m) and T(S_m) are non-empty. We still defend against an
+    empty input to avoid NaN, returning 0.0 as a neutral element of the
+    span-gap difference.
+    """
+    if values.numel() == 0:
+        return 0.0
+    if mode == "sum":
+        return float(values.sum().item())
+    # default: mean
+    return float(values.mean().item())
+
+
 def compute_position_weights_one_sample(
     student_probs: torch.Tensor,
     teacher_probs: torch.Tensor,
@@ -117,7 +158,13 @@ def compute_position_weights_one_sample(
     ----------
     student_probs / teacher_probs:
         Truncated top-k probability distributions, shape ``(T_max, k)``.
-        Rows beyond the respective answer size are zero-padded.
+        Rows beyond the respective answer size are zero-padded. The row
+        index has different semantics on each side: student row ``i`` is
+        the distribution at the ``i``-th token of the **student**
+        tokenisation of the GT answer; teacher row ``j`` is the
+        distribution at the ``j``-th token of the **teacher** tokenisation.
+        These row spaces are not aligned in general — entropy comparisons
+        between sides must aggregate per-side within a span.
     student_size / teacher_size:
         Number of valid (non-padded) rows on each side.
     student_offsets / teacher_offsets:
@@ -132,9 +179,10 @@ def compute_position_weights_one_sample(
         Weight assigned to non-top-r spans, expected in ``(0, 0.1]`` per
         the methodology. ``low_delta == 1.0`` also collapses to MultiLevelOT.
     aggregation:
-        ``"mean"`` (Eq. 10, length-normalised) or ``"sum"`` (Eq. 11,
-        accumulated). Mean pooling makes spans of different sizes
-        comparable; sum aggregation amplifies long spans.
+        ``"mean"`` (Eq. 10, length-normalised; recommended) or ``"sum"``
+        (Eq. 11, accumulated; retained for ablation). Aggregation is now
+        applied **on each side separately** before the span-level
+        difference is taken — see module docstring step 3 for why.
 
     Returns
     -------
@@ -157,10 +205,17 @@ def compute_position_weights_one_sample(
     if not s_dict or not t_dict:
         return weights
 
-    # Per-token entropy gap g(t) = H(s_t) - H(t_t), Eq. 9.
+    # Per-token entropies indexed on each side's own row space.
+    # CRITICAL: H_s[i] is the entropy of the student's distribution at
+    # STUDENT-tokenisation row i; H_t[j] is the entropy at TEACHER-
+    # tokenisation row j. The two row spaces predict different character
+    # spans of the same answer string. We must therefore aggregate H_s
+    # over Q(S_m) and H_t over T(S_m) **separately** before differencing
+    # at the span level. Subtracting H_s[i] - H_t[i] at a shared row
+    # index — the old implementation — mixes entropies of unrelated
+    # predictions whenever the two tokenisations diverge within a span.
     H_s = _per_token_entropy(student_probs)  # (T_max,)
     H_t = _per_token_entropy(teacher_probs)  # (T_max,)
-    g = H_s - H_t  # (T_max,)
 
     spans: List[Tuple[List[int], float]] = []
     for span_key, t_indices in t_dict.items():
@@ -171,11 +226,17 @@ def compute_position_weights_one_sample(
             # Span not "active" on both sides — skip and leave its positions
             # at unit weight (recovers MultiLevelOT on those positions).
             continue
-        gap_vals = g[t_idx]  # entropy gap at teacher positions of this span
-        if aggregation == "sum":
-            agg_gap = float(gap_vals.sum().item())
-        else:
-            agg_gap = float(gap_vals.mean().item())
+        # Pull entropies on each side's OWN rows of the span. Note that
+        # |s_idx| and |t_idx| can (and usually will) differ across
+        # tokenisers — this is precisely why we aggregate per-side.
+        Hs_span = H_s[torch.as_tensor(s_idx, device=device, dtype=torch.long)]
+        Ht_span = H_t[torch.as_tensor(t_idx, device=device, dtype=torch.long)]
+        # Span-level gap: difference of per-side aggregated entropies.
+        # Under aggregation="mean" each side is length-normalised, so the
+        # difference is comparable regardless of |s_idx| vs |t_idx|.
+        # Under aggregation="sum" the side with more tokens contributes
+        # more terms — this is the documented ablation variant.
+        agg_gap = _aggregate(Hs_span, aggregation) - _aggregate(Ht_span, aggregation)
         spans.append((t_idx, agg_gap))
 
     if not spans:
@@ -223,7 +284,7 @@ def compute_batch_position_weights(
          offsets.
       3. Run :func:`compute_position_weights_one_sample`.
 
-    The decode→re-tokenise round-trip is the standard trick used elsewhere
+    The decode -> re-tokenise round-trip is the standard trick used elsewhere
     in this codebase (see ``train.span_match``) and is exact for our
     purposes: the SR-truncated logits at row ``t`` correspond to the
     answer token that ``offset_mapping[t]`` maps to. Any tokenizer
