@@ -7,12 +7,20 @@ from torch.distributed.fsdp import StateDictType
 from models.checkpoint_handler import save_model_checkpoint, save_model_and_optimizer_sharded, save_optimizer_checkpoint
 
 
-def save_model(model, optimizer, step, train_config, distil_config, fsdp_config, rank):
+def save_model(model, optimizer, step, train_config, distil_config, fsdp_config, rank, subdir_name=None):
+    """Save model checkpoint.
+
+    If ``subdir_name`` is provided, the checkpoint goes to
+    ``{output_dir}/{subdir_name}/`` (overwriting any prior contents).
+    Otherwise it goes to ``{output_dir}/{step+1}/`` (legacy step-numbered).
+    """
     if train_config.enable_fsdp or distil_config.enable_fsdp:
         dist.barrier()
-    path = fr"{train_config.output_dir}/{step+1}"
-    try: os.mkdir(path)
-    except: pass
+    if subdir_name is not None:
+        path = fr"{train_config.output_dir}/{subdir_name}"
+    else:
+        path = fr"{train_config.output_dir}/{step+1}"
+    os.makedirs(path, exist_ok=True)
 
     if train_config.use_peft:
         if rank == 0: print(f"We are about to save the PEFT modules")

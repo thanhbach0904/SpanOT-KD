@@ -31,9 +31,22 @@ def parse_args():
     parser.add_argument("--distillation_config_enable_fsdp", action="store_true", help="Enable FSDP for distillation")
     parser.add_argument("--distillation_config_pure_bf16", action="store_true", help="Use pure BF16 for distillation")
     parser.add_argument("--distillation_config_distil_factor", type=float, default=1.5, help="Distillation factor")
-    parser.add_argument("--save_step", type=int, default=100, help="Save step")
+    parser.add_argument("--save_step", type=int, default=100,
+                        help="DEPRECATED — no longer used; in-epoch checkpointing was removed in favor of per-epoch dev-loss/dev-F1 selection.")
     parser.add_argument("--f", type=int, default=1, help="method")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+
+    # Dev-set carve-out and early stopping.
+    parser.add_argument("--dev_split_ratio", type=float, default=0.1,
+                        help="Fraction of on-disk train set held out as dev (seeded). The on-disk validation split is reserved as final test.")
+    parser.add_argument("--dev_split_seed", type=int, default=None,
+                        help="Seed for dev carve-out. Defaults to --seed if unset, so two runs with the same --seed get identical dev rows.")
+    parser.add_argument("--early_stopping_patience", type=int, default=3,
+                        help="Epochs of no dev-loss improvement before stopping. 0 disables.")
+    parser.add_argument("--dev_eval_max_new_tokens", type=int, default=64,
+                        help="max_new_tokens for greedy generation on dev (F1).")
+    parser.add_argument("--dev_gen_batch_size", type=int, default=4,
+                        help="Batch size for dev generation dataloader.")
     parser.add_argument("--debug_tokenization", action="store_true", help="Run tokenization alignment check on a few batches then exit")
     parser.add_argument("--debug_max_batches", type=int, default=2, help="Number of batches to check when --debug_tokenization is set")
 
@@ -56,6 +69,13 @@ def main():
     train_config, fsdp_config, distil_config, data_config = TRAIN_CONFIG(), FSDP_CONFIG(), DISTIL_CONFIG(), DATA_CONFIG()
     update_config((train_config, fsdp_config, data_config), **vars(args))
     update_config((distil_config), isSubmodule=True, **vars(args))
+
+    # Dev-split seed: default to train seed so determinism is single-knob.
+    if args.dev_split_seed is None:
+        data_config.dev_split_seed = train_config.seed
+    else:
+        data_config.dev_split_seed = args.dev_split_seed
+    data_config.dev_split_ratio = args.dev_split_ratio
     #print(train_config)
     #print(fsdp_config)
     #print(data_config)
@@ -109,8 +129,14 @@ def main():
     # Load Data
     data_config.encoder_decoder = train_config.encoder_decoder
     if rank == 0: print("[checkpoint] starting data loading...", flush=True)
+    dev_gen_dataloader = None
+    dev_gen_answers = None
     if train_config.distillation:
-        train_dataloader, teacher_train_dataloader, eval_dataloader, teacher_eval_dataloader = get_distillation_dataloader(data_config, train_config, distil_config, student_tokenizer, teacher_tokenizer, rank)
+        (train_dataloader, teacher_train_dataloader,
+         eval_dataloader, teacher_eval_dataloader,
+         dev_gen_dataloader, dev_gen_answers) = get_distillation_dataloader(
+            data_config, train_config, distil_config,
+            student_tokenizer, teacher_tokenizer, rank)
     else:
         train_dataloader, eval_dataloader = get_dataloader(data_config, train_config, tokenizer, rank)
     if rank == 0: print(f"[checkpoint] data loaded OK — train batches: {len(train_dataloader)}", flush=True)
@@ -176,6 +202,9 @@ def main():
         local_rank if train_config.enable_fsdp or distil_config.enable_fsdp else None,
         rank,
         f,
+        dev_gen_dataloader=dev_gen_dataloader,
+        dev_gen_answers=dev_gen_answers,
+        student_tokenizer=(student_tokenizer if train_config.distillation else tokenizer),
     )
     if rank == 0:
         [print(f'Key: {k}, Value: {v}') for k, v in results.items()]

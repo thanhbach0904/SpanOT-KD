@@ -29,7 +29,7 @@ class train_config:
     num_freeze_layers: int = 1
     quantization: bool = False
     save_model: bool = True
-    save_step: int = 1000
+    save_step: int = 1000  # deprecated: no longer drives in-epoch checkpointing
     save_optimizer: bool=False
     use_fast_kernels: bool = False
     distillation: bool = False
@@ -37,3 +37,10 @@ class train_config:
     training_size: int = 1
     encoder_decoder: bool = False
     f : int = 1
+
+    # Dev-loss early stopping (epochs without dev-loss improvement; 0 disables).
+    early_stopping_patience: int = 3
+    # Generative dev F1: max new tokens for student.generate during dev eval.
+    dev_eval_max_new_tokens: int = 64
+    # Batch size for the dev generation dataloader.
+    dev_gen_batch_size: int = 4
