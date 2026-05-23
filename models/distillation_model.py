@@ -465,17 +465,6 @@ class DistillationLoss(nn.Module):
         crossentropy_loss = self.crossentropy_weight * student_predictions.loss
 
         # --- SpanOT-KD: compute per-position weight tensor ---
-        # When span KD is disabled, `position_weights` stays `None` and the
-        # loss reduces exactly to the original MultiLevelOT objective.
-        # When enabled, `position_weights` has shape (B, T_max). For each
-        # sample we identify aligned spans between the student/teacher
-        # tokenisations of the ground-truth answer text, compute the
-        # per-token entropy gap g(t) = H(s_t) - H(t_t) on the truncated
-        # top-k distributions just produced above, aggregate per span
-        # (mean or sum), partition the spans by top-r%, and assign
-        # mu in {1.0, delta} to matched positions while leaving
-        # non-matched positions at 1.0. See train/span_ot.py and Eqs.
-        # 9-14 of the SpanOT-KD methodology.
         position_weights = None
         if self.span_kd_enabled and self.student_tokenizer is not None and self.teacher_tokenizer is not None:
             from train.span_ot import compute_batch_position_weights
@@ -496,11 +485,8 @@ class DistillationLoss(nn.Module):
 
         # --- Distillation loss components ---
         # (1) L1 / OT-style component: per-sample |p_s - p_t| summed over vocab, averaged over tokens.
-        # SpanOT-KD weights each token-position contribution by omega(t) before the
-        # length-mean (Eq. 15 of the methodology, decomposed as Eq. 15b for
-        # matched/non-matched regions). Non-matched positions retain unit
-        # weight, so the original behaviour is preserved on positions outside
-        # any aligned span. With `position_weights=None` the math reduces
+        # SpanOT-KD weights each token-position contribution by omega(t) before the length-mean  
+        #  With `position_weights=None` the math reduces
         # exactly to the original `.sum(-1).mean(-1)` formulation.
         l1_per_sample = torch.zeros(student.size(0), device=student.device)
         for i in range(student.size(0)):
@@ -532,18 +518,12 @@ class DistillationLoss(nn.Module):
             teacher, student, epsilon=sinkhorn_epsilon, row_weights=position_weights,
         )
         sinkhorn_component = sinkhorn_raw_tensor * sinkhorn_gamma
-
-        # Capture pre-weight-scaling diagnostic values BEFORE applying
-        # self.distillation_weight, so we can see whether the raw OT distance
-        # itself is degenerate versus merely being down-weighted.
-        # Defensive: Sinkhorn_seq.forward_with_diagnostics returns int(0) when
-        # the batch is empty; fall back to 0.0 in that edge case.
+       
         if isinstance(sinkhorn_raw_tensor, torch.Tensor):
             sinkhorn_raw_value = float(sinkhorn_raw_tensor.detach().item())
         else:
             sinkhorn_raw_value = float(sinkhorn_raw_tensor)
 
-        # Apply global distillation weight so components sum exactly to distillation_loss
         l1_component = self.distillation_weight * l1_component
         kl_component = self.distillation_weight * kl_component
         sinkhorn_component = self.distillation_weight * sinkhorn_component
@@ -551,25 +531,14 @@ class DistillationLoss(nn.Module):
         distillation_loss = l1_component + kl_component + sinkhorn_component
 
         diagnostics = {
-            # Raw Sinkhorn value as returned by Sinkhorn_seq.forward: this is
-            # already a sum over the batch of (0.001 * per-sample Sinkhorn).
-            # "Before weight scaling" = before the * 0.1 gamma and before
-            # self.distillation_weight.
             "sinkhorn_raw_value": sinkhorn_raw_value,
-            # Purer number: mean over batch of sum(P*C), with NO scaling applied.
             "sinkhorn_per_sample_raw_mean": sinkhorn_diag["sinkhorn_per_sample_raw_mean"],
             "sinkhorn_epsilon": sinkhorn_diag["sinkhorn_epsilon"],
             "sinkhorn_gamma": sinkhorn_gamma,
             "sinkhorn_distillation_weight": float(self.distillation_weight),
-            # Cost-matrix (C) statistics pooled across the batch, before any
-            # exp/normalisation. If cost_mean << epsilon, K is ~uniform and
-            # Sinkhorn transport is degenerate.
             "cost_mean": sinkhorn_diag["cost_mean"],
             "cost_max": sinkhorn_diag["cost_max"],
             "cost_min": sinkhorn_diag["cost_min"],
-            # SpanOT-KD diagnostics. When span KD is disabled these are
-            # constant placeholders so downstream code can read them
-            # unconditionally without branching.
             "span_kd_enabled": bool(self.span_kd_enabled),
             "span_top_r": float(self.span_top_r),
             "span_low_delta": float(self.span_low_delta),

@@ -18,7 +18,6 @@ from train.evaluations import evaluation
 from train.save import save_train_params, save_model
 from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from models.distillation_model import DistillationLoss, preprocess_distillation_batch
-from train.span_match import SpanMatchEvaluator
 
 # llm_distillation/benchmark is a namespace package with no __init__.py and
 # its modules use bare imports (e.g. `import score`), so we add the
@@ -76,39 +75,6 @@ def _compute_dev_f1(student_model, dev_gen_dataloader, dev_gen_answers, tokenize
         dist.barrier()
     return float(res['f1'])
 
-
-def _moving_average(values, window):
-    """Simple centered moving average for smoothing noisy loss curves."""
-    if window <= 1 or len(values) < window:
-        return list(values)
-    import numpy as np
-    arr = np.asarray(values, dtype=float)
-    kernel = np.ones(window, dtype=float) / float(window)
-    smoothed = np.convolve(arr, kernel, mode="same")
-    return smoothed.tolist()
-
-
-def _component_grad_norm(component_loss, params):
-    """Compute the L2 norm of gradients produced by a single loss component.
-
-    IMPORTANT caveats:
-      * Caller is responsible for ensuring ``param.grad`` is zero before this
-        call — otherwise the norm reflects accumulation from prior backwards.
-      * Uses ``retain_graph=True`` so subsequent backwards on OTHER components
-        of the same forward pass are still possible. The caller must eventually
-        do one backward *without* ``retain_graph`` (or free the graph) to avoid
-        leaking activations.
-      * For FSDP the returned norm is the LOCAL (sharded) norm. That's fine for
-        ratio-style comparisons between components on the same rank.
-    """
-    component_loss.backward(retain_graph=True)
-    sq_sum = 0.0
-    for p in params:
-        if p.grad is not None:
-            g = p.grad.detach()
-            # .float() guards against fp16 overflow when squaring small values.
-            sq_sum += float(g.float().norm(2).item()) ** 2
-    return sq_sum ** 0.5
 
 
 def run_grad_norm_probe(components, student_params, optimizer):
@@ -187,54 +153,6 @@ def plot_loss_curves(loss_history, output_path, smoothing_window=50,
     plt.close(fig)
     print(f"[plot_loss_curves] Saved loss curve plot to: {output_path}")
 
-    # --- (commented out) Panel: 3 components of distillation loss ---
-    # steps = loss_history["step"]
-    # fig2, ax = plt.subplots(1, 1, figsize=(12, 4.5), sharex=True)
-    # for key, label, color in [
-    #     ("l1", "L1/OT component", "tab:green"),
-    #     ("kl", "KL component (x0.1)", "tab:red"),
-    #     ("sinkhorn", "Sinkhorn component (x0.1)", "tab:purple"),
-    # ]:
-    #     raw = loss_history[key]
-    #     ax.plot(steps, raw, alpha=0.25, color=color, linewidth=0.8)
-    #     smooth = _moving_average(raw, smoothing_window)
-    #     ax.plot(steps, smooth, color=color, linewidth=1.8,
-    #             label=f"{label} (MA{smoothing_window})")
-    # ax.set_ylabel("Loss")
-    # ax.set_title("Distillation loss components (weighted, sum to total above)")
-    # ax.legend(loc="best")
-    # ax.grid(True, alpha=0.3)
-
-    # --- (commented out) Panel: Sinkhorn raw + cost-matrix diagnostics ---
-    # have_diag = len(loss_history.get("sinkhorn_raw", [])) == len(steps)
-    # if have_diag:
-    #     fig3, ax = plt.subplots(1, 1, figsize=(12, 4.5))
-    #     diag_curves = [
-    #         ("sinkhorn_raw",         "Sinkhorn raw (pre-gamma, pre-w)", "tab:purple"),
-    #         ("sinkhorn_per_sample",  "Sinkhorn per-sample raw mean",    "tab:pink"),
-    #         ("cost_mean",            "C mean",                          "tab:brown"),
-    #         ("cost_max",             "C max",                           "tab:olive"),
-    #         ("cost_min",             "C min",                           "tab:gray"),
-    #     ]
-    #     plotted_any = False
-    #     for key, label, color in diag_curves:
-    #         raw = loss_history.get(key, [])
-    #         if len(raw) != len(steps):
-    #             continue
-    #         import numpy as np
-    #         raw_arr = np.asarray(raw, dtype=float)
-    #         raw_arr = np.where(raw_arr > 0, raw_arr, np.nan)
-    #         ax.plot(steps, raw_arr, alpha=0.25, color=color, linewidth=0.8)
-    #         smooth = _moving_average(np.nan_to_num(raw_arr, nan=0.0).tolist(), smoothing_window)
-    #         ax.plot(steps, smooth, color=color, linewidth=1.6,
-    #                 label=f"{label} (MA{smoothing_window})")
-    #         plotted_any = True
-    #     if plotted_any:
-    #         ax.set_yscale("log")
-    #     ax.set_ylabel("Value (log scale)")
-    #     ax.set_title("Sinkhorn diagnostics: raw LSD value and cost-matrix stats")
-    #     ax.legend(loc="best", fontsize=8)
-    #     ax.grid(True, which="both", alpha=0.3)
 
 
 def plot_grad_norm_curves(grad_norm_history, output_path):
@@ -325,26 +243,6 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
             span_top_r=getattr(distil_config, "span_top_r", 0.5),
             span_low_delta=getattr(distil_config, "span_low_delta", 0.1),
         )
-
-    # Span-match evaluator (opt-in via SPAN_MATCH_EVAL=1).
-    # Set SPAN_MATCH_MAX_BATCHES=N to cap the number of batches per evaluation
-    # pass (default 500).  Each pass iterates over the train dataloader from the
-    # beginning, so it does not disturb the outer training loop's iterator.
-    _span_eval_enabled = int(os.environ.get("SPAN_MATCH_EVAL", "0")) > 0
-    _span_max_batches  = int(os.environ.get("SPAN_MATCH_MAX_BATCHES", "500"))
-    span_evaluator = None
-    if train_config.distillation and _span_eval_enabled and rank == 0:
-        span_evaluator = SpanMatchEvaluator(
-            student_tokenizer_path=model.student.name_or_path,
-            teacher_tokenizer_path=model.teacher.name_or_path,
-            output_dir=train_config.output_dir or ".",
-            max_eval_batches=_span_max_batches,
-            rank=rank,
-        )
-        print(f"[train] Span-match evaluator ENABLED (max_eval_batches={_span_max_batches}). "
-              "Runs at pre_training and post_training.")
-    elif train_config.distillation and rank == 0:
-        print("[train] Span-match evaluator disabled (set SPAN_MATCH_EVAL=1 to enable).")
 
     # Create a gradient scaler for fp16
     if train_config.use_fp16 and train_config.enable_fsdp:
@@ -441,16 +339,6 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                 f"[guard] eval_dataloader has 1355 rows — that's the QED held-out test set, "
                 "not the dev carve-out. Aborting before any training.")
             print(f"[dev/test guard] dev (eval) size = {dev_len}")
-
-    # Phase 1: pre-training span-match baseline (vanilla student, no gradient).
-    if span_evaluator is not None and teacher_train_dataloader is not None:
-        try:
-            span_evaluator.run_evaluation(
-                model, train_dataloader, teacher_train_dataloader,
-                phase_label="pre_training", global_step=0, local_rank=local_rank,
-            )
-        except Exception as _e:
-            print(f"[train] Span-match pre_training eval failed: {_e}")
 
     for epoch in range(train_config.num_epochs):
         epoch_start_time = time.perf_counter()
@@ -766,22 +654,6 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
 
     if train_config.enable_fsdp and not train_config.use_peft:
         save_train_params(train_config, fsdp_config, rank)
-
-    # Phase 3: post-training span-match evaluation and history plot.
-    if span_evaluator is not None and teacher_train_dataloader is not None:
-        try:
-            span_evaluator.run_evaluation(
-                model, train_dataloader, teacher_train_dataloader,
-                phase_label="post_training",
-                global_step=train_config.num_epochs * steps_per_epoch - 1,
-                local_rank=local_rank,
-            )
-        except Exception as _e:
-            print(f"[train] Span-match post_training eval failed: {_e}")
-        try:
-            span_evaluator.plot_history()
-        except Exception as _e:
-            print(f"[train] Span-match plot_history failed: {_e}")
 
     # Save loss curve plot (rank 0 only).
     if rank == 0 and (len(train_loss) > 0 or len(val_loss) > 0):

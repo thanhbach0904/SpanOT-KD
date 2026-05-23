@@ -75,6 +75,9 @@ import torch
 
 from train.span_match import find_parent_token
 
+# Fires once per process to show how parent-span alignment works.
+_SPAN_ALIGN_DEBUG_PRINTED: bool = False
+
 
 def _per_token_entropy(probs: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
     """Shannon entropy along the last dim.
@@ -314,6 +317,26 @@ def compute_batch_position_weights(
         t_offsets = _safe_offset_map(answer_text, teacher_tokenizer)
         if not s_offsets or not t_offsets:
             continue
+
+        global _SPAN_ALIGN_DEBUG_PRINTED
+        if not _SPAN_ALIGN_DEBUG_PRINTED:
+            _SPAN_ALIGN_DEBUG_PRINTED = True
+            s_len_dbg = min(int(student_sizes[b]), len(s_offsets))
+            t_len_dbg = min(int(teacher_sizes[b]), len(t_offsets))
+            s_toks = [answer_text[s:e] for s, e in s_offsets[:s_len_dbg]]
+            t_toks = [answer_text[s:e] for s, e in t_offsets[:t_len_dbg]]
+            s_dict_dbg, t_dict_dbg = find_parent_token(s_offsets[:s_len_dbg], t_offsets[:t_len_dbg])
+            print("\n[SpanOT-KD alignment debug] ---- first sample ----", flush=True)
+            print(f"  answer_text      : {answer_text!r}", flush=True)
+            print(f"  student tokens   : {s_toks}", flush=True)
+            print(f"  teacher tokens   : {t_toks}", flush=True)
+            print(f"  parent spans ({len(s_dict_dbg)}):", flush=True)
+            for span_key, s_idxs in s_dict_dbg.items():
+                t_idxs = t_dict_dbg.get(span_key, [])
+                s_span_toks = [s_toks[i] for i in s_idxs if i < len(s_toks)]
+                t_span_toks = [t_toks[i] for i in t_idxs if i < len(t_toks)]
+                print(f"    chars {span_key}: student={s_span_toks}  teacher={t_span_toks}", flush=True)
+            print("[SpanOT-KD alignment debug] ---- end ----\n", flush=True)
 
         weights[b] = compute_position_weights_one_sample(
             student_probs=student_probs[b],
