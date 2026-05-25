@@ -187,13 +187,17 @@ def plot_grad_norm_curves(grad_norm_history, output_path):
     plt.close(fig)
     print(f"[plot_grad_norm_curves] Saved grad-norm plot to: {output_path}")
 
-def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gradient_accumulation_steps, train_config, distil_config, dataset_config, teacher_train_dataloader=None, teacher_eval_dataloader=None, fsdp_config=None, local_rank=None, rank=None, f=1, dev_gen_dataloader=None, dev_gen_answers=None, student_tokenizer=None):
+def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gradient_accumulation_steps, train_config, distil_config, dataset_config, teacher_train_dataloader=None, teacher_eval_dataloader=None, fsdp_config=None, local_rank=None, rank=None, f=1, dev_gen_dataloader=None, dev_gen_answers=None, student_tokenizer=None, wandb_name_suffix=None):
     # Weights & Biases tracking system initialization.
     os.environ["WANDB__SERVICE_WAIT"] = "300"
     if rank == 0:
+        # When run inside a span_top_r sweep, the caller passes a suffix
+        # (e.g. "-r0.3") so the three runs are distinguishable in the W&B UI.
+        _suffix = wandb_name_suffix or ""
         wandb.init(
             project=f"llm_distillation_{dataset_config.file.split('/')[-1][:-3]}",
-            name=f"{train_config.model_name.split('/')[-1]}-{model.teacher.name_or_path.split('/')[-1]}-d{distil_config.distil_factor}-t{distil_config.teacher_temperature}{distil_config.student_temperature}" if train_config.distillation else f"{train_config.model_name.split('/')[-1]}",
+            name=(f"{train_config.model_name.split('/')[-1]}-{model.teacher.name_or_path.split('/')[-1]}-d{distil_config.distil_factor}-t{distil_config.teacher_temperature}{distil_config.student_temperature}{_suffix}"
+                  if train_config.distillation else f"{train_config.model_name.split('/')[-1]}{_suffix}"),
             config={
                 "model_name": train_config.model_name.split('/')[-1],
                 "dataset": dataset_config.file.split('/')[-1],
@@ -676,5 +680,13 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                 plot_grad_norm_curves(grad_norm_history, grad_plot_path)
             except Exception as e:
                 print(f"[train] Failed to save grad-norm plot: {e}")
+
+    # Close the W&B run cleanly so the next train() call (e.g. inside a
+    # span_top_r sweep) starts a fresh run instead of appending to this one.
+    if rank == 0:
+        try:
+            wandb.finish()
+        except Exception as _e:
+            print(f"[train] wandb.finish() raised: {_e}")
 
     return results

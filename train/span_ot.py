@@ -140,7 +140,7 @@ def _aggregate(values: torch.Tensor, mode: str) -> float:
         return 0.0
     if mode == "sum":
         return float(values.sum().item())
-    # default: mean
+    # else: mean
     return float(values.mean().item())
 
 
