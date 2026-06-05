@@ -22,28 +22,41 @@ def load_module_from_py_file(py_file: str) -> object:
     return module
 
 
-def get_dataset(dataset_config, tokenizer, split: str) -> torch.utils.data.Dataset:
+def _load_dataset_module(dataset_config):
     if not dataset_config.file:
         raise ValueError(
             f"Dataset not specified. Please select a dataset path with the parameter '--dataset.file'.")
 
     if dataset_config.file.endswith('.py'):
-        module_path, func_name = Path(dataset_config.file), "get_split"
+        module_path = Path(dataset_config.file)
     else:
-        module_path, func_name = Path(
-            dataset_config.file+"/load.py"), "get_split"
+        module_path = Path(dataset_config.file + "/load.py")
 
     if not os.path.isfile(module_path):
         raise ValueError(
             f"The load.py file in the dataset folder or the path to a python loading file doesn't exist. {module_path}")
-    module = load_module_from_py_file(module_path.as_posix())
+    return load_module_from_py_file(module_path.as_posix())
 
+
+def get_dataset(dataset_config, tokenizer, split: str) -> torch.utils.data.Dataset:
+    module = _load_dataset_module(dataset_config)
     try:
-        return getattr(module, func_name)(dataset_config, tokenizer, split)
+        return getattr(module, "get_split")(dataset_config, tokenizer, split)
     except AttributeError:
-        raise ValueError(f"Method '{func_name}' not found in {module_path.as_posix()}.")
-    except Exception:
-        raise
+        raise ValueError(f"Method 'get_split' not found in {dataset_config.file}.")
+
+
+def get_dev_generation_dataset(dataset_config, tokenizer):
+    """Return the dev set prepared for greedy generation (raw prompts,
+    left-padded input_ids, gold answers preserved). Requires the dataset
+    loader to expose ``get_dev_for_generation``.
+    """
+    module = _load_dataset_module(dataset_config)
+    if not hasattr(module, "get_dev_for_generation"):
+        raise AttributeError(
+            f"Dataset loader {dataset_config.file} does not implement "
+            "'get_dev_for_generation' — required for generative dev F1.")
+    return module.get_dev_for_generation(dataset_config, tokenizer)
 
 
 def get_dataloader(dataset_config, train_config, tokenizer, rank, distil_config=None):
@@ -76,10 +89,13 @@ def get_dataloader(dataset_config, train_config, tokenizer, rank, distil_config=
         print(f"--> Training Set Length = {len(dataset_train)}")
 
     if (train_config.run_validation):
+        # Note: 'dev' is a seeded 10% carve-out of the on-disk train set; the
+        # on-disk 'validation' split is the held-out final test set and the
+        # loader will RAISE if asked for it. See loader docstrings.
         dataset_val = get_dataset(
             dataset_config,
             tokenizer,
-            split="validation",
+            split="dev",
         )
 
         if train_config.context_length and not sort_index_val:
@@ -100,10 +116,45 @@ def get_dataloader(dataset_config, train_config, tokenizer, rank, distil_config=
             **val_dl_kwargs,
         )
         if rank == 0:
-            print(f"--> Validation Set Length = {len(dataset_val)}")
+            print(f"--> Dev Set Length (seeded carve-out from train) = {len(dataset_val)}")
+            # Hard guard: dev must never equal the on-disk held-out test size.
+            assert len(dataset_val) != 1355, (
+                f"[guard] Dev set has 1355 rows — this is the QED held-out test set. "
+                "The training pipeline must not load it. Check qed loader split routing.")
         return train_dataloader, eval_dataloader
     else:
         return train_dataloader, None
+
+
+def get_dev_gen_dataloader(dataset_config, train_config, tokenizer, rank):
+    """Build a dataloader for greedy generation on the dev split.
+
+    The dataset has left-padded input_ids/attention_mask; the gold answers
+    column ``original_nq_answers`` is preserved separately on the dataset
+    (the caller pulls it out before set_format strips non-tensor columns).
+    """
+    dataset = get_dev_generation_dataset(dataset_config, tokenizer)
+
+    # Pull the gold answers out before we lock the format to tensors.
+    answers = []
+    for sublist in dataset['original_nq_answers']:
+        if sublist and isinstance(sublist[0], dict) and 'string' in sublist[0]:
+            answers.append(sublist[0]['string'])
+        else:
+            answers.append("")
+
+    dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=train_config.dev_gen_batch_size,
+        num_workers=train_config.num_workers_dataloader,
+        pin_memory=True,
+        shuffle=False,
+    )
+    if rank == 0:
+        print(f"--> Dev Generation Set Length = {len(dataset)} "
+              f"(batch_size={train_config.dev_gen_batch_size})")
+    return dataloader, answers
 
 
 def get_distillation_dataloader(dataset_config, train_config, distil_config, student_tokenizer, teacher_tokenizer, rank):
@@ -113,4 +164,12 @@ def get_distillation_dataloader(dataset_config, train_config, distil_config, stu
     dataset_config.encoder_decoder = True if distil_config.encoder_decoder else False
     teacher_train_dataloader, teacher_eval_dataloader = get_dataloader(dataset_config, train_config, teacher_tokenizer, rank, distil_config)
     dataset_config.encoder_decoder = train_config.encoder_decoder
-    return student_train_dataloader, teacher_train_dataloader, student_eval_dataloader, teacher_eval_dataloader
+
+    # Dev generation dataloader is built against the STUDENT tokenizer — the
+    # student is what's being selected by F1.
+    dev_gen_dataloader, dev_gen_answers = get_dev_gen_dataloader(
+        dataset_config, train_config, student_tokenizer, rank)
+
+    return (student_train_dataloader, teacher_train_dataloader,
+            student_eval_dataloader, teacher_eval_dataloader,
+            dev_gen_dataloader, dev_gen_answers)

@@ -1,4 +1,7 @@
 import os
+import gc
+import json
+import shutil
 import argparse
 import random
 import torch
@@ -17,6 +20,11 @@ from models.models_utils import (get_model, get_distillation_models, get_optimiz
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = "true"
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
+# Discrete grid for the optional span_top_r sweep. The methodology paper
+# only recommends a small set of plausible top-r values, so we pin the
+# grid here rather than continuous search.
+SPAN_TOP_R_SWEEP_VALUES = [0.3, 0.5, 0.7]
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tuning script")
     parser.add_argument("--model_name", type=str, required=True, help="Path to the model")
@@ -31,104 +39,145 @@ def parse_args():
     parser.add_argument("--distillation_config_enable_fsdp", action="store_true", help="Enable FSDP for distillation")
     parser.add_argument("--distillation_config_pure_bf16", action="store_true", help="Use pure BF16 for distillation")
     parser.add_argument("--distillation_config_distil_factor", type=float, default=1.5, help="Distillation factor")
-    parser.add_argument("--save_step", type=int, default=100, help="Save step")
+    parser.add_argument("--save_step", type=int, default=100,
+                        help="DEPRECATED — no longer used; in-epoch checkpointing was removed in favor of per-epoch dev-loss/dev-F1 selection.")
     parser.add_argument("--f", type=int, default=1, help="method")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--debug_tokenization", action="store_true", help="Run tokenization alignment check on a few batches then exit")
-    parser.add_argument("--debug_max_batches", type=int, default=2, help="Number of batches to check when --debug_tokenization is set")
+
+    # Dev-set carve-out and early stopping.
+    parser.add_argument("--dev_split_ratio", type=float, default=0.1,
+                        help="Fraction of on-disk train set held out as dev (seeded). The on-disk validation split is reserved as final test.")
+    parser.add_argument("--dev_split_seed", type=int, default=None,
+                        help="Seed for dev carve-out. Defaults to --seed if unset, so two runs with the same --seed get identical dev rows.")
+    parser.add_argument("--early_stopping_patience", type=int, default=3,
+                        help="Epochs of no dev-loss improvement before stopping. 0 disables.")
+    parser.add_argument("--dev_eval_max_new_tokens", type=int, default=64,
+                        help="max_new_tokens for greedy generation on dev (F1).")
+    parser.add_argument("--dev_gen_batch_size", type=int, default=4,
+                        help="Batch size for dev generation dataloader.")
+    # SpanOT-KD: span-selective extension of MultiLevelOT (see
+    # train/span_ot.py). When `--span_kd_enabled` is omitted the run is
+    # byte-for-byte identical to vanilla MultiLevelOT.
+    parser.add_argument("--distillation_config_span_kd_enabled", action="store_true",
+                        help="Enable SpanOT-KD: span-selective per-token weighting of HAD/SL/SD (default: off, recovers MultiLevelOT)")
+    parser.add_argument("--distillation_config_span_aggregation", type=str, default="mean", choices=["mean", "sum"],
+                        help="Per-span entropy-gap aggregation: 'mean' (Eq. 10) or 'sum' (Eq. 11)")
+    parser.add_argument("--distillation_config_span_top_r", type=float, default=0.5,
+                        help="Fraction of spans (sorted by entropy gap) deemed high-priority. r=1.0 collapses to MultiLevelOT")
+    parser.add_argument("--distillation_config_span_low_delta", type=float, default=0.1,
+                        help="Down-weight applied to non-top-r spans. Methodology recommends (0, 0.1]. delta=1.0 collapses to MultiLevelOT")
+    # Optional span_top_r sweep (per seed). When enabled the script trains 3
+    # students consecutively with span_top_r in SPAN_TOP_R_SWEEP_VALUES, then
+    # selects the best by dev F1 and by dev CE loss (these can differ) and
+    # copies both winners to the canonical {output_dir}/best_dev_f1 and
+    # {output_dir}/best_dev_loss directories for downstream test evaluation.
+    parser.add_argument("--distillation_config_span_top_r_sweep", action="store_true",
+                        help=("Sweep span_top_r over {0.3, 0.5, 0.7} (per seed) and pick the best by dev F1 "
+                              "and the best by dev CE loss — possibly two different r values. Requires "
+                              "--distillation and --distillation_config_span_kd_enabled."))
     return parser.parse_args()
 
-def main():
-    args = parse_args()
 
-    train_config, fsdp_config, distil_config, data_config = TRAIN_CONFIG(), FSDP_CONFIG(), DISTIL_CONFIG(), DATA_CONFIG()
-    update_config((train_config, fsdp_config, data_config), **vars(args))
-    update_config((distil_config), isSubmodule=True, **vars(args))
-    #print(train_config)
-    #print(fsdp_config)
-    #print(data_config)
+def _seed_everything(seed: int):
+    """Re-apply the global seeds. Called at the start of every training run
+    inside the sweep so that, modulo span_top_r, the runs are deterministic."""
+    torch.cuda.manual_seed(seed)
+    torch.manual_seed(seed)
+    random.seed(seed)
 
-    torch.cuda.manual_seed(train_config.seed)
-    torch.manual_seed(train_config.seed)
-    random.seed(train_config.seed)
 
-    if train_config.enable_fsdp or distil_config.enable_fsdp:
-        setup()
-        local_rank = int(os.environ["LOCAL_RANK"])
-        rank = int(os.environ["RANK"])
-    else: rank = 0
+def _free_after_run(*objs):
+    """Aggressively drop references and free GPU memory between sweep runs."""
+    for _ in objs:
+        pass  # references go out of caller frame after `del` there
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-    if torch.distributed.is_initialized():
-        torch.cuda.set_device(local_rank)
-        clear_gpu_cache(local_rank)
-        setup_environ_flags(rank)
 
-    # Load Model and Tokenizer
+def _copytree_overwrite(src: str, dst: str):
+    """Copy `src` to `dst`, overwriting any existing `dst`."""
+    if os.path.exists(dst):
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+
+
+def _execute_training_run(args, train_config, fsdp_config, distil_config, data_config,
+                          rank, local_rank, run_output_dir, r_override=None,
+                          sweep_tag=None, wandb_name_suffix=None):
+    """Build models + data + optimizer, then call train(). Returns results dict.
+
+    The caller decides where checkpoints live (`run_output_dir`) and which
+    span_top_r the run uses (`r_override`). When `r_override` is None the
+    value supplied via CLI is used unchanged — i.e. single-run behaviour is
+    untouched.
+    """
+    train_config.output_dir = run_output_dir
+    if rank == 0:
+        os.makedirs(run_output_dir, exist_ok=True)
+
+    # Re-seed before each run so the only thing that varies across sweep
+    # iterations is span_top_r. Without this the second/third runs would
+    # inherit a perturbed RNG state from the first.
+    _seed_everything(train_config.seed)
+
     if train_config.distillation:
+        # Re-apply distillation knobs each run; span_top_r is the only one
+        # that may legitimately change between sweep iterations.
         distil_config.model_name = args.distillation_config_model_name
         distil_config.pure_bf16 = args.distillation_config_pure_bf16
         distil_config.enable_fsdp = args.distillation_config_enable_fsdp
         distil_config.distil_factor = args.distillation_config_distil_factor
+        distil_config.span_kd_enabled = args.distillation_config_span_kd_enabled
+        distil_config.span_aggregation = args.distillation_config_span_aggregation
+        distil_config.span_top_r = (
+            r_override if r_override is not None else args.distillation_config_span_top_r
+        )
+        distil_config.span_low_delta = args.distillation_config_span_low_delta
+        if rank == 0:
+            tag = f" [{sweep_tag}]" if sweep_tag else ""
+            if distil_config.span_kd_enabled:
+                print(f"[SpanOT-KD]{tag} ENABLED", flush=True)
+                print(f"  span_aggregation : {distil_config.span_aggregation}", flush=True)
+                print(f"  span_top_r       : {distil_config.span_top_r}", flush=True)
+                print(f"  span_low_delta   : {distil_config.span_low_delta}", flush=True)
+            else:
+                print(f"[SpanOT-KD]{tag} disabled (vanilla MultiLevelOT)", flush=True)
         student_tokenizer, teacher_tokenizer, model = get_distillation_models(
             train_config, distil_config, fsdp_config, rank, vars(args)
         )
+        tokenizer = None
     else:
         tokenizer, model = get_model(train_config, fsdp_config, rank, vars(args))
+        student_tokenizer = teacher_tokenizer = None
+
     if rank == 0: print(model)
     if rank == 0: print("[checkpoint] models loaded OK", flush=True)
 
     # Load Data
     data_config.encoder_decoder = train_config.encoder_decoder
     if rank == 0: print("[checkpoint] starting data loading...", flush=True)
+    dev_gen_dataloader = None
+    dev_gen_answers = None
+    teacher_train_dataloader = None
+    teacher_eval_dataloader = None
     if train_config.distillation:
-        train_dataloader, teacher_train_dataloader, eval_dataloader, teacher_eval_dataloader = get_distillation_dataloader(data_config, train_config, distil_config, student_tokenizer, teacher_tokenizer, rank)
+        (train_dataloader, teacher_train_dataloader,
+         eval_dataloader, teacher_eval_dataloader,
+         dev_gen_dataloader, dev_gen_answers) = get_distillation_dataloader(
+            data_config, train_config, distil_config,
+            student_tokenizer, teacher_tokenizer, rank)
     else:
         train_dataloader, eval_dataloader = get_dataloader(data_config, train_config, tokenizer, rank)
     if rank == 0: print(f"[checkpoint] data loaded OK — train batches: {len(train_dataloader)}", flush=True)
 
-    if args.debug_tokenization and train_config.distillation:
-        import sys
-        from models.distillation_model import preprocess_distillation_batch
-        from train.span_match import compute_single_sample_rates, SpanMatchEvaluator
-
-        device = f"cuda:{local_rank}" if (train_config.enable_fsdp or distil_config.enable_fsdp) else "cuda:0"
-        model.student.eval()
-        print(f"[debug_tokenization] Checking {args.debug_max_batches} batch(es) then exiting.", flush=True)
-        with torch.no_grad():
-            for batch_idx, batch_pair in enumerate(zip(train_dataloader, teacher_train_dataloader)):
-                if batch_idx >= args.debug_max_batches:
-                    break
-                batch = preprocess_distillation_batch(batch_pair)
-                batch = {k: v.to(device) for k, v in batch.items()}
-                student_out, teacher_out = model(**batch)
-                s_starts, s_sizes = SpanMatchEvaluator._extract_answer_spans(batch["student_labels"])
-                t_starts, t_sizes = SpanMatchEvaluator._extract_answer_spans(batch["teacher_labels"])
-                print(f"[batch={batch_idx}] student_labels shape={list(batch['student_labels'].shape)}, "
-                      f"s_sizes={s_sizes}, t_sizes={t_sizes}", flush=True)
-                for i in range(batch["student_labels"].size(0)):
-                    ss, se = s_starts[i], s_sizes[i]
-                    ts, te = t_starts[i], t_sizes[i]
-                    if se <= 0 or te <= 0:
-                        print(f"  sample={i}: se={se}, te={te} — skipping (no answer tokens)", flush=True)
-                        continue
-                    s_pred_ids = torch.argmax(student_out.logits[i, ss:ss + se, :], dim=-1).cpu().tolist()
-                    t_pred_ids = torch.argmax(teacher_out.logits[i, ts:ts + te, :], dim=-1).cpu().tolist()
-                    raw_labels = batch["student_labels"][i]
-                    answer_token_ids = raw_labels[raw_labels != -100].cpu().tolist()
-                    answer_text = student_tokenizer.decode(answer_token_ids, skip_special_tokens=True)
-                    print(f"\n[batch={batch_idx} sample={i}] answer_text={answer_text!r}", flush=True)
-                    compute_single_sample_rates(
-                        s_pred_ids, t_pred_ids, answer_text,
-                        student_tokenizer, teacher_tokenizer,
-                        debug=True,
-                    )
-        print("[debug_tokenization] Done. Exiting.", flush=True)
-        sys.exit(0)
-
-    # Get the optimizer and learning rate scheduler
     optimizer = get_optimizer(model, train_config, fsdp_config)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=train_config.lr, epochs=train_config.num_epochs, steps_per_epoch=len(train_dataloader),
-                                                    pct_start=train_config.pct_start, div_factor=train_config.div_factor, final_div_factor=train_config.final_div_factor)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer, max_lr=train_config.lr,
+        epochs=train_config.num_epochs, steps_per_epoch=len(train_dataloader),
+        pct_start=train_config.pct_start, div_factor=train_config.div_factor,
+        final_div_factor=train_config.final_div_factor,
+    )
 
     f = train_config.f
     results = train(
@@ -144,12 +193,203 @@ def main():
         teacher_train_dataloader if train_config.distillation else None,
         teacher_eval_dataloader if train_config.distillation else None,
         fsdp_config if train_config.enable_fsdp else None,
-        local_rank if train_config.enable_fsdp or distil_config.enable_fsdp else None,
+        local_rank if (train_config.enable_fsdp or distil_config.enable_fsdp) else None,
         rank,
         f,
+        dev_gen_dataloader=dev_gen_dataloader,
+        dev_gen_answers=dev_gen_answers,
+        student_tokenizer=(student_tokenizer if train_config.distillation else tokenizer),
+        wandb_name_suffix=wandb_name_suffix,
     )
+
+    # Drop heavy refs and reclaim GPU memory before the next sweep run.
+    del model, optimizer, scheduler
+    del train_dataloader, eval_dataloader
+    if teacher_train_dataloader is not None: del teacher_train_dataloader
+    if teacher_eval_dataloader is not None: del teacher_eval_dataloader
+    if dev_gen_dataloader is not None: del dev_gen_dataloader
+    _free_after_run()
+
+    return results
+
+
+def _run_sweep(args, train_config, fsdp_config, distil_config, data_config,
+               rank, local_rank, base_output_dir):
+    """Train one student per value in SPAN_TOP_R_SWEEP_VALUES, then pick the
+    best by dev F1 and the best by dev CE loss (these can differ) and copy
+    both winning checkpoints to canonical paths under `base_output_dir`."""
+    if not train_config.distillation:
+        raise ValueError(
+            "[sweep] --distillation_config_span_top_r_sweep requires --distillation.")
+    if not args.distillation_config_span_kd_enabled:
+        # span_top_r is a no-op without SpanOT-KD enabled — running 3 identical
+        # trainings would just burn compute.
+        raise ValueError(
+            "[sweep] --distillation_config_span_top_r_sweep requires "
+            "--distillation_config_span_kd_enabled (otherwise span_top_r has no effect).")
+
     if rank == 0:
-        [print(f'Key: {k}, Value: {v}') for k, v in results.items()]
+        print(f"\n[sweep] === Span-top-r sweep enabled — values: {SPAN_TOP_R_SWEEP_VALUES} ===\n", flush=True)
+        os.makedirs(base_output_dir, exist_ok=True)
+
+    sweep_results = {}
+    for r in SPAN_TOP_R_SWEEP_VALUES:
+        run_dir = os.path.join(base_output_dir, f"r_{r:.1f}")
+        if rank == 0:
+            print(f"\n[sweep] >>> Starting run for span_top_r = {r}  →  {run_dir}\n", flush=True)
+        results = _execute_training_run(
+            args, train_config, fsdp_config, distil_config, data_config,
+            rank, local_rank,
+            run_output_dir=run_dir, r_override=r,
+            sweep_tag=f"sweep r={r}",
+            wandb_name_suffix=f"-r{r:.1f}",
+        )
+        sweep_results[r] = results
+        if rank == 0:
+            best_dev_loss = results.get("best_dev_loss", float("nan"))
+            best_dev_f1 = results.get("best_dev_f1", None)
+            print(f"\n[sweep] <<< Finished run for span_top_r = {r}  →  "
+                  f"best_dev_loss={best_dev_loss}, best_dev_f1={best_dev_f1}\n", flush=True)
+
+    # Winner selection is rank-0 only (it's pure file I/O on cached metrics).
+    if rank == 0:
+        def _best(metric_key, mode):
+            assert mode in ("min", "max")
+            cand = []
+            for r, res in sweep_results.items():
+                v = res.get(metric_key, None)
+                if v is None: continue
+                try:
+                    cand.append((r, float(v)))
+                except (TypeError, ValueError):
+                    continue
+            if not cand:
+                return None, None
+            picker = min if mode == "min" else max
+            return picker(cand, key=lambda x: x[1])
+
+        winner_r_loss, best_dev_loss = _best("best_dev_loss", "min")
+        winner_r_f1, best_dev_f1 = _best("best_dev_f1", "max")
+
+        # Build a human-readable / machine-readable summary.
+        per_run = {}
+        for r in SPAN_TOP_R_SWEEP_VALUES:
+            res = sweep_results.get(r, {}) or {}
+            bdl = res.get("best_dev_loss", None)
+            bdf = res.get("best_dev_f1", None)
+            per_run[f"{r:.1f}"] = {
+                "run_dir": os.path.join(base_output_dir, f"r_{r:.1f}"),
+                "best_dev_loss": float(bdl) if bdl is not None else None,
+                "best_dev_f1":   float(bdf) if bdf is not None else None,
+            }
+
+        winner_dev_loss_src = (
+            os.path.join(base_output_dir, f"r_{winner_r_loss:.1f}", "best_dev_loss")
+            if winner_r_loss is not None else None
+        )
+        winner_dev_f1_src = (
+            os.path.join(base_output_dir, f"r_{winner_r_f1:.1f}", "best_dev_f1")
+            if winner_r_f1 is not None else None
+        )
+        winner_dev_loss_dst = os.path.join(base_output_dir, "best_dev_loss")
+        winner_dev_f1_dst = os.path.join(base_output_dir, "best_dev_f1")
+
+        summary = {
+            "sweep_r_values": SPAN_TOP_R_SWEEP_VALUES,
+            "seed": int(train_config.seed),
+            "per_run": per_run,
+            "winner_dev_loss": {
+                "r": winner_r_loss,
+                "best_dev_loss": best_dev_loss,
+                "src": winner_dev_loss_src,
+                "dst": winner_dev_loss_dst,
+            },
+            "winner_dev_f1": {
+                "r": winner_r_f1,
+                "best_dev_f1": best_dev_f1,
+                "src": winner_dev_f1_src,
+                "dst": winner_dev_f1_dst,
+            },
+        }
+
+        print("\n[sweep] === Sweep summary ===", flush=True)
+        for r in SPAN_TOP_R_SWEEP_VALUES:
+            entry = per_run[f"{r:.1f}"]
+            print(f"  r={r}: best_dev_loss={entry['best_dev_loss']}, "
+                  f"best_dev_f1={entry['best_dev_f1']}", flush=True)
+        print(f"  winner dev_loss: r={winner_r_loss} (dev_loss={best_dev_loss})", flush=True)
+        print(f"  winner dev_f1  : r={winner_r_f1} (dev_f1={best_dev_f1})", flush=True)
+
+        # Copy winners to canonical paths so downstream test eval (which
+        # expects {output_dir}/best_dev_loss and /best_dev_f1) just works.
+        # The per-r subdirectories are kept on disk for auditing.
+        if train_config.save_model:
+            if winner_dev_loss_src and os.path.isdir(winner_dev_loss_src):
+                _copytree_overwrite(winner_dev_loss_src, winner_dev_loss_dst)
+                print(f"[sweep] Copied dev-loss winner: {winner_dev_loss_src} → {winner_dev_loss_dst}", flush=True)
+            else:
+                print(f"[sweep] WARNING: dev-loss winner src missing ({winner_dev_loss_src}) — no canonical copy made.", flush=True)
+            if winner_dev_f1_src and os.path.isdir(winner_dev_f1_src):
+                _copytree_overwrite(winner_dev_f1_src, winner_dev_f1_dst)
+                print(f"[sweep] Copied dev-f1 winner: {winner_dev_f1_src} → {winner_dev_f1_dst}", flush=True)
+            else:
+                print(f"[sweep] WARNING: dev-f1 winner src missing ({winner_dev_f1_src}) — no canonical copy made.", flush=True)
+
+        summary_path = os.path.join(base_output_dir, "sweep_summary.json")
+        with open(summary_path, "w") as fh:
+            json.dump(summary, fh, indent=2)
+        print(f"[sweep] Wrote sweep summary: {summary_path}", flush=True)
+
+    return sweep_results
+
+
+def main():
+    args = parse_args()
+
+    train_config, fsdp_config, distil_config, data_config = TRAIN_CONFIG(), FSDP_CONFIG(), DISTIL_CONFIG(), DATA_CONFIG()
+    update_config((train_config, fsdp_config, data_config), **vars(args))
+    update_config((distil_config), isSubmodule=True, **vars(args))
+
+    # Dev-split seed: default to train seed so determinism is single-knob.
+    if args.dev_split_seed is None:
+        data_config.dev_split_seed = train_config.seed
+    else:
+        data_config.dev_split_seed = args.dev_split_seed
+    data_config.dev_split_ratio = args.dev_split_ratio
+
+    _seed_everything(train_config.seed)
+
+    if train_config.enable_fsdp or distil_config.enable_fsdp:
+        setup()
+        local_rank = int(os.environ["LOCAL_RANK"])
+        rank = int(os.environ["RANK"])
+    else:
+        rank = 0
+        local_rank = None
+
+    if rank == 0:
+        print(f"[seed] {train_config.seed}", flush=True)
+
+    if torch.distributed.is_initialized():
+        torch.cuda.set_device(local_rank)
+        clear_gpu_cache(local_rank)
+        setup_environ_flags(rank)
+
+    base_output_dir = train_config.output_dir
+    sweep_enabled = bool(getattr(args, "distillation_config_span_top_r_sweep", False))
+
+    if sweep_enabled:
+        _run_sweep(args, train_config, fsdp_config, distil_config, data_config,
+                   rank, local_rank, base_output_dir)
+    else:
+        results = _execute_training_run(
+            args, train_config, fsdp_config, distil_config, data_config,
+            rank, local_rank,
+            run_output_dir=base_output_dir, r_override=None,
+        )
+        if rank == 0:
+            [print(f'Key: {k}, Value: {v}') for k, v in results.items()]
+
 
 if __name__ == "__main__":
     main()

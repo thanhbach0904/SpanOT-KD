@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import torch
 import wandb
@@ -17,41 +18,63 @@ from train.evaluations import evaluation
 from train.save import save_train_params, save_model
 from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from models.distillation_model import DistillationLoss, preprocess_distillation_batch
-from train.span_match import SpanMatchEvaluator
+
+# llm_distillation/benchmark is a namespace package with no __init__.py and
+# its modules use bare imports (e.g. `import score`), so we add the
+# benchmark directory to sys.path before pulling in score.
+import sys as _sys
+_BENCHMARK_DIR = os.path.join(os.getenv("HOME", ""),
+                              "Multi-Level-OT", "llm_distillation", "benchmark")
+if _BENCHMARK_DIR not in _sys.path:
+    _sys.path.append(_BENCHMARK_DIR)
+import score as benchmark_score
 
 
-def _moving_average(values, window):
-    """Simple centered moving average for smoothing noisy loss curves."""
-    if window <= 1 or len(values) < window:
-        return list(values)
-    import numpy as np
-    arr = np.asarray(values, dtype=float)
-    kernel = np.ones(window, dtype=float) / float(window)
-    smoothed = np.convolve(arr, kernel, mode="same")
-    return smoothed.tolist()
+def _compute_dev_f1(student_model, dev_gen_dataloader, dev_gen_answers, tokenizer,
+                    max_new_tokens, device, rank):
+    """Greedy generation on dev + token-overlap F1 matching the benchmark driver.
 
-
-def _component_grad_norm(component_loss, params):
-    """Compute the L2 norm of gradients produced by a single loss component.
-
-    IMPORTANT caveats:
-      * Caller is responsible for ensuring ``param.grad`` is zero before this
-        call — otherwise the norm reflects accumulation from prior backwards.
-      * Uses ``retain_graph=True`` so subsequent backwards on OTHER components
-        of the same forward pass are still possible. The caller must eventually
-        do one backward *without* ``retain_graph`` (or free the graph) to avoid
-        leaking activations.
-      * For FSDP the returned norm is the LOCAL (sharded) norm. That's fine for
-        ratio-style comparisons between components on the same rank.
+    Returns the average F1 (float). Returns None on non-zero ranks; only
+    rank 0 holds the prediction strings (cheap operation, no DDP gather).
     """
-    component_loss.backward(retain_graph=True)
-    sq_sum = 0.0
-    for p in params:
-        if p.grad is not None:
-            g = p.grad.detach()
-            # .float() guards against fp16 overflow when squaring small values.
-            sq_sum += float(g.float().norm(2).item()) ** 2
-    return sq_sum ** 0.5
+    if rank != 0:
+        # F1 is computed on rank 0 only — predictions are CPU strings and the
+        # operation is cheap relative to training. Other ranks just wait.
+        if dist.is_initialized():
+            dist.barrier()
+        return None
+
+    student_model.eval()
+    predictions = []
+    with torch.no_grad():
+        for batch in tqdm(dev_gen_dataloader, desc="Dev F1 (gen)", colour="cyan", dynamic_ncols=True):
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            output = student_model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                eos_token_id=tokenizer.eos_token_id,
+                pad_token_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
+            )
+            # Strip the prompt prefix — input_ids is left-padded so prompt
+            # length is identical across the batch (= input_ids.shape[1]).
+            output = output[:, input_ids.shape[1]:]
+            sentences = tokenizer.batch_decode(output, skip_special_tokens=True)
+            for s in sentences:
+                predictions.append(s.split('\n')[0].strip())
+
+    n_pred = len(predictions)
+    n_ans = len(dev_gen_answers)
+    if n_pred != n_ans:
+        print(f"[dev F1] WARNING: {n_pred} predictions vs {n_ans} gold answers — truncating to min.")
+    n = min(n_pred, n_ans)
+    res = benchmark_score.f1_score(predictions[:n], dev_gen_answers[:n])
+    if dist.is_initialized():
+        dist.barrier()
+    return float(res['f1'])
+
 
 
 def run_grad_norm_probe(components, student_params, optimizer):
@@ -86,99 +109,50 @@ def run_grad_norm_probe(components, student_params, optimizer):
     return norms
 
 
-def plot_loss_curves(loss_history, output_path, smoothing_window=50):
-    """Plot CE/distillation losses, components, and Sinkhorn diagnostics.
-
-    Panels (top to bottom):
-      1. CE vs total distillation loss.
-      2. Three weighted components (L1/OT, KL, Sinkhorn) that sum to panel 1's
-         distillation curve.
-      3. Sinkhorn raw value (before the outer * 0.1 gamma and before
-         distillation_weight) on a log y-axis alongside the Sinkhorn component
-         and, if they were recorded, the cost-matrix statistics.
-    """
-    steps = loss_history["step"]
-    if len(steps) == 0:
-        print(f"[plot_loss_curves] No steps recorded, skipping plot.")
+def plot_loss_curves(loss_history, output_path, smoothing_window=50,
+                     epoch_train_loss=None, epoch_dev_loss=None, epoch_dev_f1=None):
+    """Plot train/dev loss and dev F1 per epoch."""
+    has_epoch_data = bool(epoch_train_loss or epoch_dev_loss or epoch_dev_f1)
+    if not has_epoch_data:
+        print("[plot_loss_curves] No epoch data recorded, skipping plot.")
         return
 
-    have_diag = len(loss_history.get("sinkhorn_raw", [])) == len(steps)
-    n_panels = 3 if have_diag else 2
-    fig, axes = plt.subplots(n_panels, 1, figsize=(12, 4.5 * n_panels), sharex=True)
-    if n_panels == 1:
-        axes = [axes]
+    fig, ax1 = plt.subplots(1, 1, figsize=(10, 5))
 
-    # --- Panel 1: CE vs total distillation ---
-    ax = axes[0]
-    for key, label, color in [
-        ("ce", "CE loss", "tab:blue"),
-        ("distil", "Distillation loss (total)", "tab:orange"),
-    ]:
-        raw = loss_history[key]
-        ax.plot(steps, raw, alpha=0.25, color=color, linewidth=0.8)
-        smooth = _moving_average(raw, smoothing_window)
-        ax.plot(steps, smooth, color=color, linewidth=1.8,
-                label=f"{label} (MA{smoothing_window})")
-    ax.set_ylabel("Loss")
-    ax.set_title("Cross-entropy vs. distillation loss")
-    ax.legend(loc="best")
-    ax.grid(True, alpha=0.3)
+    if epoch_train_loss:
+        epochs_train = list(range(1, len(epoch_train_loss) + 1))
+        ax1.plot(epochs_train, epoch_train_loss, color="tab:blue", marker="o",
+                 linewidth=1.8, label="train_loss")
 
-    # --- Panel 2: 3 components of distillation loss ---
-    ax = axes[1]
-    for key, label, color in [
-        ("l1", "L1/OT component", "tab:green"),
-        ("kl", "KL component (x0.1)", "tab:red"),
-        ("sinkhorn", "Sinkhorn component (x0.1)", "tab:purple"),
-    ]:
-        raw = loss_history[key]
-        ax.plot(steps, raw, alpha=0.25, color=color, linewidth=0.8)
-        smooth = _moving_average(raw, smoothing_window)
-        ax.plot(steps, smooth, color=color, linewidth=1.8,
-                label=f"{label} (MA{smoothing_window})")
-    ax.set_ylabel("Loss")
-    ax.set_title("Distillation loss components (weighted, sum to total above)")
-    ax.legend(loc="best")
-    ax.grid(True, alpha=0.3)
+    if epoch_dev_loss:
+        epochs_dev = list(range(1, len(epoch_dev_loss) + 1))
+        ax1.plot(epochs_dev, epoch_dev_loss, color="tab:orange", marker="s",
+                 linewidth=1.8, label="dev_loss")
 
-    # --- Panel 3: Sinkhorn raw + cost-matrix diagnostics ---
-    if have_diag:
-        ax = axes[2]
-        diag_curves = [
-            ("sinkhorn_raw",         "Sinkhorn raw (pre-gamma, pre-w)", "tab:purple"),
-            ("sinkhorn_per_sample",  "Sinkhorn per-sample raw mean",    "tab:pink"),
-            ("cost_mean",            "C mean",                          "tab:brown"),
-            ("cost_max",             "C max",                           "tab:olive"),
-            ("cost_min",             "C min",                           "tab:gray"),
-        ]
-        plotted_any = False
-        for key, label, color in diag_curves:
-            raw = loss_history.get(key, [])
-            if len(raw) != len(steps):
-                continue
-            # Guard: log-scale blows up on <=0 values; clip for display only.
-            import numpy as np
-            raw_arr = np.asarray(raw, dtype=float)
-            raw_arr = np.where(raw_arr > 0, raw_arr, np.nan)
-            ax.plot(steps, raw_arr, alpha=0.25, color=color, linewidth=0.8)
-            smooth = _moving_average(np.nan_to_num(raw_arr, nan=0.0).tolist(), smoothing_window)
-            ax.plot(steps, smooth, color=color, linewidth=1.6,
-                    label=f"{label} (MA{smoothing_window})")
-            plotted_any = True
-        if plotted_any:
-            ax.set_yscale("log")
-        ax.set_ylabel("Value (log scale)")
-        ax.set_title("Sinkhorn diagnostics: raw LSD value and cost-matrix stats")
-        ax.legend(loc="best", fontsize=8)
-        ax.grid(True, which="both", alpha=0.3)
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss")
+    ax1.set_title("Train / Dev Loss and Dev F1")
+    ax1.grid(True, alpha=0.3)
 
-    axes[-1].set_xlabel("Training step (global)")
+    if epoch_dev_f1:
+        ax2 = ax1.twinx()
+        epochs_f1 = list(range(1, len(epoch_dev_f1) + 1))
+        ax2.plot(epochs_f1, epoch_dev_f1, color="tab:green", marker="^",
+                 linewidth=1.8, linestyle="--", label="dev_F1")
+        ax2.set_ylabel("F1")
+        ax2.set_ylim(0, 1)
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
+    else:
+        ax1.legend(loc="best")
 
     fig.tight_layout()
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
     print(f"[plot_loss_curves] Saved loss curve plot to: {output_path}")
+
 
 
 def plot_grad_norm_curves(grad_norm_history, output_path):
@@ -213,13 +187,17 @@ def plot_grad_norm_curves(grad_norm_history, output_path):
     plt.close(fig)
     print(f"[plot_grad_norm_curves] Saved grad-norm plot to: {output_path}")
 
-def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gradient_accumulation_steps, train_config, distil_config, dataset_config, teacher_train_dataloader=None, teacher_eval_dataloader=None, fsdp_config=None, local_rank=None, rank=None, f=1):
+def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gradient_accumulation_steps, train_config, distil_config, dataset_config, teacher_train_dataloader=None, teacher_eval_dataloader=None, fsdp_config=None, local_rank=None, rank=None, f=1, dev_gen_dataloader=None, dev_gen_answers=None, student_tokenizer=None, wandb_name_suffix=None):
     # Weights & Biases tracking system initialization.
     os.environ["WANDB__SERVICE_WAIT"] = "300"
     if rank == 0:
+        # When run inside a span_top_r sweep, the caller passes a suffix
+        # (e.g. "-r0.3") so the three runs are distinguishable in the W&B UI.
+        _suffix = wandb_name_suffix or ""
         wandb.init(
             project=f"llm_distillation_{dataset_config.file.split('/')[-1][:-3]}",
-            name=f"{train_config.model_name.split('/')[-1]}-{model.teacher.name_or_path.split('/')[-1]}-d{distil_config.distil_factor}-t{distil_config.teacher_temperature}{distil_config.student_temperature}" if train_config.distillation else f"{train_config.model_name.split('/')[-1]}",
+            name=(f"{train_config.model_name.split('/')[-1]}-{model.teacher.name_or_path.split('/')[-1]}-d{distil_config.distil_factor}-t{distil_config.teacher_temperature}{distil_config.student_temperature}{_suffix}"
+                  if train_config.distillation else f"{train_config.model_name.split('/')[-1]}{_suffix}"),
             config={
                 "model_name": train_config.model_name.split('/')[-1],
                 "dataset": dataset_config.file.split('/')[-1],
@@ -247,29 +225,28 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
             }
         )
 
-    # Init distillation loss if distillation is enabled
+    # Init distillation loss if distillation is enabled.
+    # SpanOT-KD knobs (`span_kd_enabled`, `span_aggregation`, `span_top_r`,
+    # `span_low_delta`) are read off `distil_config` and forwarded into
+    # the loss. They default to MultiLevelOT-equivalent values, so a run
+    # that does not set the SpanOT flags is byte-for-byte identical to
+    # the previous behaviour.
     if train_config.distillation:
-        distillation_loss = DistillationLoss(distillation_weight=distil_config.distil_factor, student_temperature=distil_config.student_temperature, teacher_temperature=distil_config.teacher_temperature, skip_student_eos=True, debug=False, debug_rank=0, tokenizer_student=model.student.name_or_path, tokenizer_teacher=model.teacher.name_or_path, f=f)
-
-    # Span-match evaluator (opt-in via SPAN_MATCH_EVAL=1).
-    # Set SPAN_MATCH_MAX_BATCHES=N to cap the number of batches per evaluation
-    # pass (default 500).  Each pass iterates over the train dataloader from the
-    # beginning, so it does not disturb the outer training loop's iterator.
-    _span_eval_enabled = int(os.environ.get("SPAN_MATCH_EVAL", "0")) > 0
-    _span_max_batches  = int(os.environ.get("SPAN_MATCH_MAX_BATCHES", "500"))
-    span_evaluator = None
-    if train_config.distillation and _span_eval_enabled and rank == 0:
-        span_evaluator = SpanMatchEvaluator(
-            student_tokenizer_path=model.student.name_or_path,
-            teacher_tokenizer_path=model.teacher.name_or_path,
-            output_dir=train_config.output_dir or ".",
-            max_eval_batches=_span_max_batches,
-            rank=rank,
+        distillation_loss = DistillationLoss(
+            distillation_weight=distil_config.distil_factor,
+            student_temperature=distil_config.student_temperature,
+            teacher_temperature=distil_config.teacher_temperature,
+            skip_student_eos=True,
+            debug=False,
+            debug_rank=0,
+            tokenizer_student=model.student.name_or_path,
+            tokenizer_teacher=model.teacher.name_or_path,
+            f=f,
+            span_kd_enabled=getattr(distil_config, "span_kd_enabled", False),
+            span_aggregation=getattr(distil_config, "span_aggregation", "mean"),
+            span_top_r=getattr(distil_config, "span_top_r", 0.5),
+            span_low_delta=getattr(distil_config, "span_low_delta", 0.1),
         )
-        print(f"[train] Span-match evaluator ENABLED (max_eval_batches={_span_max_batches}). "
-              "Runs at pre_training and post_training.")
-    elif train_config.distillation and rank == 0:
-        print("[train] Span-match evaluator disabled (set SPAN_MATCH_EVAL=1 to enable).")
 
     # Create a gradient scaler for fp16
     if train_config.use_fp16 and train_config.enable_fsdp:
@@ -323,17 +300,49 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                   "with caution.")
     steps_per_eval = len(eval_dataloader)
     steps_per_epoch = len(train_dataloader)
-    best_val_loss = float("inf")
+    best_dev_loss = float("inf")
+    best_dev_f1 = -1.0
+    epochs_since_dev_loss_improved = 0
+    early_stop_triggered = False
+    val_loss = []
+    val_ppl = []
+    dev_f1_history = []
 
-    # Phase 1: pre-training span-match baseline (vanilla student, no gradient).
-    if span_evaluator is not None and teacher_train_dataloader is not None:
+    # Persist the dev-split metadata so two runs with the same --seed can be
+    # audited for determinism after the fact.
+    if rank == 0 and dev_gen_dataloader is not None:
         try:
-            span_evaluator.run_evaluation(
-                model, train_dataloader, teacher_train_dataloader,
-                phase_label="pre_training", global_step=0, local_rank=local_rank,
-            )
+            os.makedirs(train_config.output_dir, exist_ok=True)
+            dev_ds = dev_gen_dataloader.dataset
+            # dev_ds carries 'example_id' since it's the raw HF dataset with
+            # added prompt/tokenization columns. Use it as a stable identifier
+            # (HF row indices change if upstream re-shuffles).
+            try:
+                example_ids = [int(x) for x in dev_ds['example_id']]
+            except Exception:
+                example_ids = list(range(len(dev_ds)))
+            split_meta = {
+                "seed": int(getattr(dataset_config, "dev_split_seed", train_config.seed)),
+                "ratio": float(getattr(dataset_config, "dev_split_ratio", 0.1)),
+                "n_dev": len(dev_ds),
+                "example_ids_first10": example_ids[:10],
+                "example_ids_all": example_ids,
+            }
+            with open(os.path.join(train_config.output_dir, "dev_split_indices.json"), "w") as fh:
+                json.dump(split_meta, fh)
+            print(f"[dev split] seed={split_meta['seed']} ratio={split_meta['ratio']} "
+                  f"n_dev={split_meta['n_dev']} first10={split_meta['example_ids_first10']}")
         except Exception as _e:
-            print(f"[train] Span-match pre_training eval failed: {_e}")
+            print(f"[dev split] failed to write dev_split_indices.json: {_e}")
+
+    # Hard guard against accidentally pulling the held-out 1355-sample test set.
+    if rank == 0 and eval_dataloader is not None:
+        dev_len = len(eval_dataloader.dataset) if hasattr(eval_dataloader, 'dataset') else None
+        if dev_len is not None:
+            assert dev_len != 1355, (
+                f"[guard] eval_dataloader has 1355 rows — that's the QED held-out test set, "
+                "not the dev carve-out. Aborting before any training.")
+            print(f"[dev/test guard] dev (eval) size = {dev_len}")
 
     for epoch in range(train_config.num_epochs):
         epoch_start_time = time.perf_counter()
@@ -479,6 +488,15 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                             "diag/cost_mean":                   cost_mean,
                             "diag/cost_max":                    cost_max,
                             "diag/cost_min":                    cost_min,
+                            # SpanOT-KD diagnostics: tells you what fraction of
+                            # token positions were down-weighted (delta) vs at
+                            # unit weight. If `span_low_weight_frac` is ~0 then
+                            # `top_r` is too permissive; if it's ~1 then
+                            # `top_r` is too aggressive and hardly any spans
+                            # are getting full weight.
+                            "diag/span_kd_enabled":             int(diag.get("span_kd_enabled", False)),
+                            "diag/span_low_weight_frac":        float(diag.get("span_low_weight_frac", 0.0)),
+                            "diag/span_position_weight_mean":   float(diag.get("span_position_weight_mean", 1.0)),
                             "teacher_loss": teacher_output.loss.detach().float(),
                             "lr": optimizer.param_groups[0]['lr'],
                             "grad_probe_ran": int(ran_grad_probe),
@@ -492,49 +510,10 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                 lr_scheduler.step()
                 pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{steps_per_epoch} completed (loss: {loss.detach().float()})")
 
-                if (train_config.run_validation and ((step+1) % train_config.save_step == 0 or step+1 == steps_per_epoch)):
-                    if rank == 0: print("Running evaluation...")
-                    # model.eval()
-                    # eval_ppl, eval_epoch_loss, eval_cross_loss, eval_dist_loss = evaluation(
-                    #     model, train_config, distil_config, 
-                    #     eval_dataloader if not train_config.distillation else zip(eval_dataloader, teacher_eval_dataloader),
-                    #     steps_per_eval, local_rank, epoch)
-                    # model.student.train() if train_config.distillation else model.train()
-                    # val_loss.append(eval_epoch_loss)
-                    # val_ppl.append(eval_ppl)
-                    
-                    # if rank == 0:
-                    #     print(f"Perplexity {eval_ppl}, loss {eval_epoch_loss}")
-                    #     if train_config.distillation:
-                    #         wandb.log({
-                    #             "eval_ppl": eval_ppl,
-                    #             "eval_epoch_loss": eval_epoch_loss,
-                    #             "eval_cross_loss": eval_cross_loss,
-                    #             "eval_dist_loss": eval_dist_loss
-                    #         })
-                    #     else:
-                    #         wandb.log({
-                    #             "eval_ppl": eval_ppl,
-                    #             "eval_epoch_loss": eval_epoch_loss,
-                    #         })
-
-                    # if eval_epoch_loss < best_val_loss or train_config.save_all:
-                    if True:
-                        # if eval_epoch_loss < best_val_loss:
-                        #     best_val_loss = eval_epoch_loss
-                            # if rank == 0:
-                            #     print(f"best eval loss is {best_val_loss}")
-                        if train_config.save_model:
-                            checkpoint_start_time = time.perf_counter()
-                            save_model(
-                                model if not train_config.distillation else model.student, 
-                                optimizer, ((steps_per_epoch*epoch)+step), train_config, distil_config, fsdp_config, rank
-                            )
-                            checkpoint_end_time = time.perf_counter() - checkpoint_start_time
-                            checkpoint_times.append(checkpoint_end_time)
-                    clear_gpu_cache(rank)
+                # In-epoch save_step-driven checkpointing was removed: model
+                # selection is now per-epoch on dev loss + dev F1 (see below).
             pbar.close()
-        
+
         if epoch == 0:
             distillation_loss.on_epoch_end()
 
@@ -561,48 +540,137 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                 "train_epoch_time": epoch_end_time
             })
 
+        # ============================================================
+        # End-of-epoch dev evaluation: dev loss (model selection +
+        # early-stop signal) and dev F1 (best-model selection for
+        # final test-set evaluation).
+        # ============================================================
+        if train_config.run_validation and eval_dataloader is not None:
+            # --- Dev loss (teacher-forced; matches existing evaluation()). ---
+            model.student.eval() if train_config.distillation else model.eval()
+            eval_iter = (eval_dataloader if not train_config.distillation
+                         else zip(eval_dataloader, teacher_eval_dataloader))
+            eval_ppl, eval_epoch_loss, eval_cross_loss, eval_dist_loss = evaluation(
+                epoch, model, train_config, distil_config,
+                eval_iter, steps_per_eval, local_rank,
+            )
+            model.student.train() if train_config.distillation else model.train()
+            val_loss.append(eval_epoch_loss)
+            val_ppl.append(eval_ppl)
+            dev_loss_scalar = float(eval_epoch_loss.detach().float().item()) if torch.is_tensor(eval_epoch_loss) else float(eval_epoch_loss)
+
+            if rank == 0:
+                print(f"[dev] epoch {epoch+1}: dev_loss={dev_loss_scalar:.4f}, ppl={float(eval_ppl):.4f}")
+                wandb_log = {
+                    "dev/loss": dev_loss_scalar,
+                    "dev/ppl": float(eval_ppl),
+                    "epoch": epoch + 1,
+                }
+                if train_config.distillation:
+                    wandb_log["dev/cross_loss"] = float(eval_cross_loss)
+                    wandb_log["dev/distil_loss"] = float(eval_dist_loss)
+                wandb.log(wandb_log)
+
+            # --- Dev F1 (generative; matches the benchmark driver). ---
+            dev_f1 = None
+            if dev_gen_dataloader is not None and student_tokenizer is not None:
+                # Generation runs on the student. Determine its device.
+                if train_config.enable_fsdp or distil_config.enable_fsdp:
+                    gen_device = torch.device(f"cuda:{local_rank}")
+                else:
+                    gen_device = torch.device("cuda:0")
+                student_for_gen = model.student if train_config.distillation else model
+                dev_f1 = _compute_dev_f1(
+                    student_for_gen, dev_gen_dataloader, dev_gen_answers,
+                    student_tokenizer, train_config.dev_eval_max_new_tokens,
+                    gen_device, rank,
+                )
+                # Restore train mode regardless of who ran generation.
+                if train_config.distillation:
+                    model.student.train()
+                else:
+                    model.train()
+                if rank == 0 and dev_f1 is not None:
+                    print(f"[dev] epoch {epoch+1}: dev_f1={dev_f1:.4f}")
+                    dev_f1_history.append(dev_f1)
+                    wandb.log({"dev/f1": dev_f1, "epoch": epoch + 1})
+
+            # --- Best-checkpoint saves: both best_dev_loss and best_dev_f1. ---
+            if dev_loss_scalar < best_dev_loss:
+                best_dev_loss = dev_loss_scalar
+                epochs_since_dev_loss_improved = 0
+                if train_config.save_model:
+                    save_model(
+                        model if not train_config.distillation else model.student,
+                        optimizer, (steps_per_epoch * (epoch + 1)) - 1,
+                        train_config, distil_config, fsdp_config, rank,
+                        subdir_name="best_dev_loss",
+                    )
+                    if rank == 0:
+                        print(f"[dev] new best dev_loss={best_dev_loss:.4f} → saved best_dev_loss/")
+                        wandb.log({"dev/best_loss": best_dev_loss, "epoch": epoch + 1})
+            else:
+                epochs_since_dev_loss_improved += 1
+                if rank == 0:
+                    print(f"[dev] no dev_loss improvement ({epochs_since_dev_loss_improved}/{train_config.early_stopping_patience})")
+
+            if dev_f1 is not None and dev_f1 > best_dev_f1:
+                best_dev_f1 = dev_f1
+                if train_config.save_model:
+                    save_model(
+                        model if not train_config.distillation else model.student,
+                        optimizer, (steps_per_epoch * (epoch + 1)) - 1,
+                        train_config, distil_config, fsdp_config, rank,
+                        subdir_name="best_dev_f1",
+                    )
+                    if rank == 0:
+                        print(f"[dev] new best dev_f1={best_dev_f1:.4f} → saved best_dev_f1/")
+                        wandb.log({"dev/best_f1": best_dev_f1, "epoch": epoch + 1})
+
+            clear_gpu_cache(rank)
+
+            # --- Early stopping on dev loss (epochs without improvement). ---
+            if (train_config.early_stopping_patience > 0
+                    and epochs_since_dev_loss_improved >= train_config.early_stopping_patience):
+                if rank == 0:
+                    print(f"[dev] early stopping triggered after epoch {epoch+1} "
+                          f"({epochs_since_dev_loss_improved} epochs without dev_loss improvement)")
+                early_stop_triggered = True
+                break
+
     avg_epoch_time = sum(epoch_times) / len(epoch_times)
     avg_checkpoint_time = sum(
         checkpoint_times) / len(checkpoint_times) if len(checkpoint_times) > 0 else 0
     avg_train_prep = sum(train_prep)/len(train_prep)
     avg_train_loss = sum(train_loss)/len(train_loss)
-    # if train_config.run_validation:
-    #     avg_eval_prep = sum(val_ppl)/len(val_ppl)
-    #     avg_eval_loss = sum(val_loss)/len(val_loss)
 
     results['avg_train_prep'] = avg_train_prep
     results['avg_train_loss'] = avg_train_loss
-    # if train_config.run_validation:
-    #     results['avg_eval_prep'] = avg_eval_prep
-    #     results['avg_eval_loss'] = avg_eval_loss
     results["avg_epoch_time"] = avg_epoch_time
     results["avg_checkpoint_time"] = avg_checkpoint_time
+    if train_config.run_validation and len(val_loss) > 0:
+        results["best_dev_loss"] = best_dev_loss
+        results["dev_loss_history"] = [float(x.detach().float().item()) if torch.is_tensor(x) else float(x) for x in val_loss]
+        if best_dev_f1 > -1.0:
+            results["best_dev_f1"] = best_dev_f1
+            results["dev_f1_history"] = dev_f1_history
+        results["early_stop_triggered"] = early_stop_triggered
 
     if train_config.enable_fsdp and not train_config.use_peft:
         save_train_params(train_config, fsdp_config, rank)
 
-    # Phase 3: post-training span-match evaluation and history plot.
-    if span_evaluator is not None and teacher_train_dataloader is not None:
-        try:
-            span_evaluator.run_evaluation(
-                model, train_dataloader, teacher_train_dataloader,
-                phase_label="post_training",
-                global_step=train_config.num_epochs * steps_per_epoch - 1,
-                local_rank=local_rank,
-            )
-        except Exception as _e:
-            print(f"[train] Span-match post_training eval failed: {_e}")
-        try:
-            span_evaluator.plot_history()
-        except Exception as _e:
-            print(f"[train] Span-match plot_history failed: {_e}")
-
-    # Save loss curve plot (rank 0 only, distillation runs only).
-    if rank == 0 and train_config.distillation and len(loss_history["step"]) > 0:
+    # Save loss curve plot (rank 0 only).
+    if rank == 0 and (len(train_loss) > 0 or len(val_loss) > 0):
         plot_dir = train_config.output_dir if train_config.output_dir else "."
         plot_path = os.path.join(plot_dir, "loss_curve.png")
         try:
-            plot_loss_curves(loss_history, plot_path)
+            _to_float = lambda lst: [float(x.detach().float().item()) if torch.is_tensor(x) else float(x) for x in lst]
+            plot_loss_curves(
+                loss_history, plot_path,
+                epoch_train_loss=_to_float(train_loss) if train_loss else None,
+                epoch_dev_loss=_to_float(val_loss) if val_loss else None,
+                epoch_dev_f1=dev_f1_history if dev_f1_history else None,
+            )
         except Exception as e:
             print(f"[train] Failed to save loss curve plot: {e}")
 
@@ -612,5 +680,13 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                 plot_grad_norm_curves(grad_norm_history, grad_plot_path)
             except Exception as e:
                 print(f"[train] Failed to save grad-norm plot: {e}")
+
+    # Close the W&B run cleanly so the next train() call (e.g. inside a
+    # span_top_r sweep) starts a fresh run instead of appending to this one.
+    if rank == 0:
+        try:
+            wandb.finish()
+        except Exception as _e:
+            print(f"[train] wandb.finish() raised: {_e}")
 
     return results
