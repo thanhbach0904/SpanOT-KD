@@ -1,0 +1,1018 @@
+{
+  "runtime_analysis": {
+    "total_samples": 1347,
+    "proposed_method": {
+      "total_time_s": 546.7114,
+      "mean_time_s": 0.405873,
+      "median_time_s": 0.3515,
+      "stdev_time_s": 0.211719,
+      "min_time_s": 0.1484,
+      "max_time_s": 1.2284
+    },
+    "vanilla": {
+      "total_time_s": 561.2964,
+      "mean_time_s": 0.416701,
+      "median_time_s": 0.3541,
+      "stdev_time_s": 0.204316,
+      "min_time_s": 0.1594,
+      "max_time_s": 1.3101
+    },
+    "speedup_vanilla_over_proposed": {
+      "total": 1.0267,
+      "mean_per_sample": 1.0564,
+      "median_per_sample": 1.0371
+    },
+    "proposed_faster_count": 944,
+    "vanilla_faster_count": 403,
+    "equal_time_count": 0
+  },
+  "prediction_difference_analysis": {
+    "total_samples": 1347,
+    "different_prediction_count": 109,
+    "same_prediction_count": 1238,
+    "different_prediction_rate": 0.0809,
+    "differing_cases": [
+      {
+        "example_id": -8846576882654798687,
+        "question": "where is most data stored on a computer",
+        "ground_truth": "Primary storage ( also known as main memory or internal memory ) , often referred to simply as memory",
+        "proposed_method_prediction": "primary storage",
+        "vanilla_prediction": "primary storage ( also known as memory )",
+        "proposed_method_time_s": 0.2805,
+        "vanilla_time_s": 0.3209
+      },
+      {
+        "example_id": -8837653404749291736,
+        "question": "what is the song in red dead redemption",
+        "ground_truth": "Far Away",
+        "proposed_method_prediction": "`` Deadman 's Gun ''",
+        "vanilla_prediction": "`` Far Away '' by José González",
+        "proposed_method_time_s": 0.3625,
+        "vanilla_time_s": 0.3198
+      },
+      {
+        "example_id": -8508097902776503936,
+        "question": "what is the word for clarified butter in the balkans and middle east",
+        "ground_truth": "smen",
+        "proposed_method_prediction": "smen",
+        "vanilla_prediction": "butter",
+        "proposed_method_time_s": 0.449,
+        "vanilla_time_s": 0.4172
+      },
+      {
+        "example_id": -8435878643903573062,
+        "question": "how do tsetse flies (glossina spp.) differ from other dipteran flies",
+        "ground_truth": "fold their wings completely when they are resting so that one wing rests directly on top of the other over their abdomens",
+        "proposed_method_prediction": "long proboscis",
+        "vanilla_prediction": "fold their wings completely when they are resting",
+        "proposed_method_time_s": 0.2068,
+        "vanilla_time_s": 0.2561
+      },
+      {
+        "example_id": -8384749502417019982,
+        "question": "what is mercy mercy me by marvin gaye about",
+        "ground_truth": "sorrow regarding the environment",
+        "proposed_method_prediction": "the second single from Marvin Gaye 's 1971 album , What 's Going On",
+        "vanilla_prediction": "the second single from Marvin Gaye 's 1971 album , What 's Going On . Following the breakthrough of the title track 's success , the song , written solely by Gaye , became regarded as one of popular music 's most poignant anthems of sorrow regarding the environment",
+        "proposed_method_time_s": 0.3874,
+        "vanilla_time_s": 0.9624
+      },
+      {
+        "example_id": -8095180930653230478,
+        "question": "where does a roadrunner live in the desert",
+        "ground_truth": "in the southwestern United States and Mexico",
+        "proposed_method_prediction": "southwestern United States and Mexico",
+        "vanilla_prediction": "in the southwestern United States and Mexico",
+        "proposed_method_time_s": 0.3845,
+        "vanilla_time_s": 0.4077
+      },
+      {
+        "example_id": -8045385407730518552,
+        "question": "how many branches of reserve bank of india in india",
+        "ground_truth": "20 regional offices and 11 sub-offices",
+        "proposed_method_prediction": "20",
+        "vanilla_prediction": "four",
+        "proposed_method_time_s": 0.4295,
+        "vanilla_time_s": 0.4175
+      },
+      {
+        "example_id": -7769846680650238179,
+        "question": "what does it mean to be on parole",
+        "ground_truth": "a temporary release of a prisoner who agrees to certain conditions before the completion of the maximum sentence period",
+        "proposed_method_prediction": "Parole is a temporary release of a prisoner who agrees to certain conditions before the completion of the maximum sentence period , originating from the French parole ( `` voice , spoken words '' )",
+        "vanilla_prediction": "Parole is a temporary release of a prisoner who agrees to certain conditions before the completion of the maximum sentence period , originating from the French parole ( `` voice , spoken words '' ) .",
+        "proposed_method_time_s": 0.6569,
+        "vanilla_time_s": 0.6778
+      },
+      {
+        "example_id": -7751260041016274573,
+        "question": "when did mcdonald's sell 1 million burgers",
+        "ground_truth": "By 1965",
+        "proposed_method_prediction": "1965",
+        "vanilla_prediction": "1960",
+        "proposed_method_time_s": 0.2211,
+        "vanilla_time_s": 0.3146
+      },
+      {
+        "example_id": -7675585242740496397,
+        "question": "when did ibuprofen become available over the counter",
+        "ground_truth": "1983",
+        "proposed_method_prediction": "in 1983 and 1984",
+        "vanilla_prediction": "in the United Kingdom in 1969",
+        "proposed_method_time_s": 0.2377,
+        "vanilla_time_s": 0.2627
+      },
+      {
+        "example_id": -7608917750967276627,
+        "question": "where was the first sonic drive in located",
+        "ground_truth": "Woodward , Oklahoma",
+        "proposed_method_prediction": "Woodward , Oklahoma",
+        "vanilla_prediction": "in Enid and Stillwater",
+        "proposed_method_time_s": 0.6333,
+        "vanilla_time_s": 0.6761
+      },
+      {
+        "example_id": -7530958148001769429,
+        "question": "what is the secret of the law of attraction",
+        "ground_truth": "the belief that by focusing on positive or negative thoughts people can bring positive or negative experiences into their life",
+        "proposed_method_prediction": "focusing on positive or negative thoughts",
+        "vanilla_prediction": "focus on positive or negative thoughts",
+        "proposed_method_time_s": 0.8514,
+        "vanilla_time_s": 0.9326
+      },
+      {
+        "example_id": -7299076255108845857,
+        "question": "what is the sentencing reform act of 1984",
+        "ground_truth": "U.S. federal statute intended to increase consistency in United States federal sentencing",
+        "proposed_method_prediction": "a U.S. federal statute intended to increase consistency in United States federal sentencing",
+        "vanilla_prediction": "intended to increase consistency in United States federal sentencing",
+        "proposed_method_time_s": 0.3702,
+        "vanilla_time_s": 0.2706
+      },
+      {
+        "example_id": -7183308086946106350,
+        "question": "what does the pearl symbolize in the bible",
+        "ground_truth": "the Kingdom of Heaven",
+        "proposed_method_prediction": "the Kingdom of Heaven",
+        "vanilla_prediction": "Kingdom of Heaven",
+        "proposed_method_time_s": 0.3611,
+        "vanilla_time_s": 0.4773
+      },
+      {
+        "example_id": -6959456828837530300,
+        "question": "where is the north pole on the world map",
+        "ground_truth": "90 ° N 0 ° W ﻿ / ﻿ 90 ° N - 0 ° E",
+        "proposed_method_prediction": "90 ° N 0 ° W",
+        "vanilla_prediction": "90 ° N 0 ° W ﻿ / ﻿ 90 ° N - 0 ° E ﻿ / 90 ; - 0",
+        "proposed_method_time_s": 0.3924,
+        "vanilla_time_s": 0.5529
+      },
+      {
+        "example_id": -6729136649709789995,
+        "question": "who is allowed to be apart of the european union",
+        "ground_truth": "a candidate state must be a free market democracy",
+        "proposed_method_prediction": "Italy",
+        "vanilla_prediction": "the Holy See",
+        "proposed_method_time_s": 0.5386,
+        "vanilla_time_s": 0.5441
+      },
+      {
+        "example_id": -6651255565624706987,
+        "question": "where do secondary xylem and phloem cells arise from",
+        "ground_truth": "The vascular cambium",
+        "proposed_method_prediction": "in the stems and roots of many plants , specifically in dicots such as buttercups and oak trees , and gymnosperms such as pine trees",
+        "vanilla_prediction": "in the vascular cambium",
+        "proposed_method_time_s": 0.6333,
+        "vanilla_time_s": 0.6761
+      },
+      {
+        "example_id": -6632801910088531808,
+        "question": "where does patience is a virtue come from",
+        "ground_truth": "`` Psychomachia , '' an epic poem written in the fifth century .",
+        "proposed_method_prediction": "Psychomachia",
+        "vanilla_prediction": "an epic poem written in the fifth century",
+        "proposed_method_time_s": 0.7667,
+        "vanilla_time_s": 0.7925
+      },
+      {
+        "example_id": -6539570811594767036,
+        "question": "which is produced in plants of narora kakrapar tarapur",
+        "ground_truth": "Atomic Power",
+        "proposed_method_prediction": "BWR",
+        "vanilla_prediction": "heavy water",
+        "proposed_method_time_s": 0.2596,
+        "vanilla_time_s": 0.2654
+      },
+      {
+        "example_id": -6147777366028203410,
+        "question": "what is the normal range for plasma glucose concentration",
+        "ground_truth": "3.9 and 5.5 mmol / L ( 70 to 100 mg / dL )",
+        "proposed_method_prediction": "5.0 -- 7.2 mmol / l ( 90 -- 130 mg / dL )",
+        "vanilla_prediction": "5.0 -- 7.2 mmol / l ( 90 -- 130 mg / dL ) before meals , and less than 10 mmol / L ( 180 mg / dL ) after meals ( as measured by a blood glucose monitor )",
+        "proposed_method_time_s": 0.3937,
+        "vanilla_time_s": 0.8883
+      },
+      {
+        "example_id": -6081006991734955423,
+        "question": "where did the battle of bonhomme richard take place",
+        "ground_truth": "near Flamborough Head",
+        "proposed_method_prediction": "Flamborough Head",
+        "vanilla_prediction": "near Flamborough Head",
+        "proposed_method_time_s": 0.6468,
+        "vanilla_time_s": 0.6374
+      },
+      {
+        "example_id": -5962986518182066490,
+        "question": "who has the most green jackets from the masters",
+        "ground_truth": "Nicklaus",
+        "proposed_method_prediction": "Nicklaus",
+        "vanilla_prediction": "Jimmy Demaret",
+        "proposed_method_time_s": 0.2507,
+        "vanilla_time_s": 0.303
+      },
+      {
+        "example_id": -5957270386941120779,
+        "question": "what observation led to the theory of seafloor spreading",
+        "ground_truth": "that continents `` ploughed '' through the sea .",
+        "proposed_method_prediction": "convection currents in the asthenosphere , which is ductile , or plastic , and the brittle lithosphere ( crust and upper mantle )",
+        "vanilla_prediction": "convection currents in the asthenosphere",
+        "proposed_method_time_s": 0.6333,
+        "vanilla_time_s": 0.6761
+      },
+      {
+        "example_id": -5737509619250561344,
+        "question": "ethiopia flight 961 crashes in to the sea",
+        "ground_truth": "23 November 1996",
+        "proposed_method_prediction": "fuel exhaustion",
+        "vanilla_prediction": "Indian Ocean",
+        "proposed_method_time_s": 0.3611,
+        "vanilla_time_s": 0.4773
+      },
+      {
+        "example_id": -5728504822585102060,
+        "question": "doric ionic and corinthian orders all refer to types of",
+        "ground_truth": "styles of classical architecture , each distinguished by its proportions and characteristic profiles and details , and most readily recognizable by the type of column employed",
+        "proposed_method_prediction": "columns",
+        "vanilla_prediction": "column",
+        "proposed_method_time_s": 0.2693,
+        "vanilla_time_s": 0.287
+      },
+      {
+        "example_id": -5670136654288025028,
+        "question": "where is the crown of thorns starfish located",
+        "ground_truth": "perhaps most common in Australia , but can occur at tropical and subtropical latitudes from the Red Sea and the east African coast across the Indian Ocean , and across the Pacific Ocean to the west coast of Central America",
+        "proposed_method_prediction": "in Australia",
+        "vanilla_prediction": "in the Red Sea and the east African coast across the Indian Ocean , and across the Pacific Ocean to the west coast of Central America",
+        "proposed_method_time_s": 0.3451,
+        "vanilla_time_s": 0.5363
+      },
+      {
+        "example_id": -5551039786517755042,
+        "question": "who sings there's a hole in my bucket",
+        "ground_truth": "two characters , called Henry and Liza",
+        "proposed_method_prediction": "Henry",
+        "vanilla_prediction": "Henry and Liza",
+        "proposed_method_time_s": 0.2535,
+        "vanilla_time_s": 0.2635
+      },
+      {
+        "example_id": -5491608596844802544,
+        "question": "why did britain declare war on france in 1803",
+        "ground_truth": "Napoleon 's planned invasion of the United Kingdom",
+        "proposed_method_prediction": "to prevent a French landing",
+        "vanilla_prediction": "to prevent Napoleon 's planned invasion of the United Kingdom",
+        "proposed_method_time_s": 0.3659,
+        "vanilla_time_s": 0.3732
+      },
+      {
+        "example_id": -5359074013301333095,
+        "question": "where does captain america civil war take place",
+        "ground_truth": "approximately one year after Ultron 's defeat in the nation of Sokovia at the hands of the Avengers",
+        "proposed_method_prediction": "Lagos",
+        "vanilla_prediction": "the nation of Sokovia",
+        "proposed_method_time_s": 0.1907,
+        "vanilla_time_s": 0.2233
+      },
+      {
+        "example_id": -5069924657217440985,
+        "question": "where was the first nhl hockey game played",
+        "ground_truth": "Montreal",
+        "proposed_method_prediction": "in front of only 700 fans",
+        "vanilla_prediction": "front of only 700 fans",
+        "proposed_method_time_s": 0.3152,
+        "vanilla_time_s": 0.3067
+      },
+      {
+        "example_id": -5061926765893337070,
+        "question": "where does the red wolf live in the world",
+        "ground_truth": "the southeastern United States",
+        "proposed_method_prediction": "southeastern United States of unresolved taxonomic identity",
+        "vanilla_prediction": "southeastern United States",
+        "proposed_method_time_s": 0.2271,
+        "vanilla_time_s": 0.1914
+      },
+      {
+        "example_id": -4752044886865067782,
+        "question": "who wrote the first declaration of human rights",
+        "ground_truth": "Cyrus",
+        "proposed_method_prediction": "the Imperial State",
+        "vanilla_prediction": "Mohammad Reza Pahlavi",
+        "proposed_method_time_s": 0.3945,
+        "vanilla_time_s": 0.436
+      },
+      {
+        "example_id": -4482979425454794325,
+        "question": "which organization is the major voice of the legal profession",
+        "ground_truth": "National Legal Aid & Defender Association",
+        "proposed_method_prediction": "The National Legal Aid & Defender Association",
+        "vanilla_prediction": "National Legal Aid & Defender Association",
+        "proposed_method_time_s": 0.3584,
+        "vanilla_time_s": 0.3459
+      },
+      {
+        "example_id": -3908725222525421557,
+        "question": "what role does the president play in foreign affairs",
+        "ground_truth": "negotiates treaties with foreign nations",
+        "proposed_method_prediction": "negotiates treaties with foreign nations",
+        "vanilla_prediction": "Commander in Chief of the United States Armed Forces",
+        "proposed_method_time_s": 0.2587,
+        "vanilla_time_s": 0.3141
+      },
+      {
+        "example_id": -3895567339690724091,
+        "question": "rizal finished all the chapters of the novel noli me tangere in",
+        "ground_truth": "Spanish",
+        "proposed_method_prediction": "Spanish",
+        "vanilla_prediction": "Tagalog",
+        "proposed_method_time_s": 0.2573,
+        "vanilla_time_s": 0.2577
+      },
+      {
+        "example_id": -3568942573258999273,
+        "question": "what is the ultimate objective of financial management",
+        "ground_truth": "accomplish the objectives of the organization",
+        "proposed_method_prediction": "achieve the objectives of the organization",
+        "vanilla_prediction": "the efficient and effective management of money ( funds )",
+        "proposed_method_time_s": 0.6067,
+        "vanilla_time_s": 0.6142
+      },
+      {
+        "example_id": -3501594713650916557,
+        "question": "what does ss stand for on naval ships",
+        "ground_truth": "`` United States Ship '' ( USS )",
+        "proposed_method_prediction": "Naval prefixes came into use as abbreviations for longer titles , such as `` His / Her Majesty 's Ship '' in the British Royal Navy , abbreviated `` H.M.S. '' and then `` HMS '' .",
+        "vanilla_prediction": "His / Her Majesty 's Ship",
+        "proposed_method_time_s": 0.806,
+        "vanilla_time_s": 0.2522
+      },
+      {
+        "example_id": -3422482453881148813,
+        "question": "how many seasons of the rugrats are there",
+        "ground_truth": "9",
+        "proposed_method_prediction": "172",
+        "vanilla_prediction": "9",
+        "proposed_method_time_s": 0.2377,
+        "vanilla_time_s": 0.2627
+      },
+      {
+        "example_id": -3344403727454433038,
+        "question": "when do we find out luke and leia are siblings",
+        "ground_truth": "In Return of the Jedi ( 1983 )",
+        "proposed_method_prediction": "Return of the Jedi",
+        "vanilla_prediction": "in Return of the Jedi",
+        "proposed_method_time_s": 0.3878,
+        "vanilla_time_s": 0.3886
+      },
+      {
+        "example_id": -3197375005297250079,
+        "question": "which condition would most likely require nutrition delivered through tpn",
+        "ground_truth": "bowel obstruction",
+        "proposed_method_prediction": "gastrointestinal tract",
+        "vanilla_prediction": "Crohn 's disease",
+        "proposed_method_time_s": 0.6238,
+        "vanilla_time_s": 0.6481
+      },
+      {
+        "example_id": -3126002400370149073,
+        "question": "who is running for south dakota attorney general",
+        "ground_truth": "Lawrence County State 's Attorney John Fitzgerald",
+        "proposed_method_prediction": "Lawrence County State 's Attorney John Fitzgerald",
+        "vanilla_prediction": "Jason Ravnsborg",
+        "proposed_method_time_s": 0.811,
+        "vanilla_time_s": 0.4345
+      },
+      {
+        "example_id": -3089533754017582743,
+        "question": "when was the last time unc did not make the ncaa tournament",
+        "ground_truth": "2003",
+        "proposed_method_prediction": "2012",
+        "vanilla_prediction": "2016",
+        "proposed_method_time_s": 0.811,
+        "vanilla_time_s": 0.4345
+      },
+      {
+        "example_id": -3088831012491766629,
+        "question": "what is final season of game of thrones",
+        "ground_truth": "the eighth season",
+        "proposed_method_prediction": "The eighth and final season",
+        "vanilla_prediction": "sixth episode",
+        "proposed_method_time_s": 0.2064,
+        "vanilla_time_s": 0.1785
+      },
+      {
+        "example_id": -3001662032923593229,
+        "question": "who has won india's next super star",
+        "ground_truth": "Aman Gandotra",
+        "proposed_method_prediction": "Aman Gandotra",
+        "vanilla_prediction": "Naina Singh",
+        "proposed_method_time_s": 0.2435,
+        "vanilla_time_s": 0.2405
+      },
+      {
+        "example_id": -2723133941683365826,
+        "question": "why did the colonists have a problem with the tea act of 1773",
+        "ground_truth": "because they believed that it violated their rights as Englishmen to `` No taxation without representation '' , that is , to be taxed only by their own elected representatives and not by a British parliament in which they were not represented",
+        "proposed_method_prediction": "because they believed that it violated their rights as Englishmen to `` No taxation without representation '' , that is , to be taxed only by their own elected representatives and not by a British parliament in which they were not represented",
+        "vanilla_prediction": "it violated their rights as Englishmen to `` No taxation without representation '' , that is , to be taxed only by their own elected representatives and not by a British parliament in which they were not represented",
+        "proposed_method_time_s": 0.8989,
+        "vanilla_time_s": 0.8288
+      },
+      {
+        "example_id": -2375464507115406450,
+        "question": "who was the ottoman governor who led egypt in the years following the napoleonic wars",
+        "ground_truth": "Isma'il Pasha and Tewfik Pasha",
+        "proposed_method_prediction": "Muhammad Ali",
+        "vanilla_prediction": "Isma'il Pasha",
+        "proposed_method_time_s": 0.2587,
+        "vanilla_time_s": 0.3141
+      },
+      {
+        "example_id": -2347826883564742884,
+        "question": "who said life is like a bowl of cherries",
+        "ground_truth": "Lew Brown",
+        "proposed_method_prediction": "Ray Henderson",
+        "vanilla_prediction": "Ethel Merman",
+        "proposed_method_time_s": 0.3845,
+        "vanilla_time_s": 0.4077
+      },
+      {
+        "example_id": -2162391145049066060,
+        "question": "who is the current director of the us mint",
+        "ground_truth": "David Motl",
+        "proposed_method_prediction": "acting principal deputy director David Motl",
+        "vanilla_prediction": "the head of the United States Mint",
+        "proposed_method_time_s": 0.2427,
+        "vanilla_time_s": 0.2137
+      },
+      {
+        "example_id": -2134883146809278499,
+        "question": "where do bullets go when fired in the air",
+        "ground_truth": "bullets discharged into the air fall back down to the ground",
+        "proposed_method_prediction": "fall back to the ground",
+        "vanilla_prediction": "down to the ground",
+        "proposed_method_time_s": 0.3844,
+        "vanilla_time_s": 0.3625
+      },
+      {
+        "example_id": -1957543146923214339,
+        "question": "where did they film the theory of everything",
+        "ground_truth": "Cambridge University , and at other locations in Cambridgeshire and across the United Kingdom",
+        "proposed_method_prediction": "Cambridge University",
+        "vanilla_prediction": "Cambridge University , and at other locations in Cambridgeshire and across the United Kingdom",
+        "proposed_method_time_s": 0.4792,
+        "vanilla_time_s": 0.5349
+      },
+      {
+        "example_id": -1870248091120409120,
+        "question": "where did the potter's wheel first develop",
+        "ground_truth": "in the Near East",
+        "proposed_method_prediction": "around 4500 BC",
+        "vanilla_prediction": "around 4500 BC in the Near East",
+        "proposed_method_time_s": 0.2596,
+        "vanilla_time_s": 0.2654
+      },
+      {
+        "example_id": -1701212376306091221,
+        "question": "what does the m number mean on a pint glass",
+        "ground_truth": "imperial fluid ounces",
+        "proposed_method_prediction": "a form of drinkware made to hold either a British ( `` imperial '' ) pint of 20 imperial fluid ounces ( 568 ml ) or an American pint of 16 US fluid ounces ( 473 ml )",
+        "vanilla_prediction": "a form of drinkware",
+        "proposed_method_time_s": 0.811,
+        "vanilla_time_s": 0.4345
+      },
+      {
+        "example_id": -1609362606908546787,
+        "question": "when does the cannes film festival take place",
+        "ground_truth": "usually in May",
+        "proposed_method_prediction": "May",
+        "vanilla_prediction": "annually",
+        "proposed_method_time_s": 0.2903,
+        "vanilla_time_s": 0.2667
+      },
+      {
+        "example_id": -1268708007949703854,
+        "question": "the rule of the three rightly guided caliphs was called",
+        "ground_truth": "The Rashidun Caliphs",
+        "proposed_method_prediction": "the Rashidun Caliphs",
+        "vanilla_prediction": "the first four caliphs",
+        "proposed_method_time_s": 0.1734,
+        "vanilla_time_s": 0.162
+      },
+      {
+        "example_id": -1206653570097564556,
+        "question": "where does the movie proof of life take place",
+        "ground_truth": "the ( fictional ) South American country of Tecala",
+        "proposed_method_prediction": "Tecala",
+        "vanilla_prediction": "South American country of Tecala",
+        "proposed_method_time_s": 0.3641,
+        "vanilla_time_s": 0.3381
+      },
+      {
+        "example_id": -599106694350296477,
+        "question": "theme of the song roar by katy perry",
+        "ground_truth": "standing up for oneself",
+        "proposed_method_prediction": "pop song containing elements of arena rock and lyrics centering on standing up for oneself and self - empowerment",
+        "vanilla_prediction": "arena rock",
+        "proposed_method_time_s": 0.4061,
+        "vanilla_time_s": 0.4437
+      },
+      {
+        "example_id": -366326691424887969,
+        "question": "when does madea's family funeral come out",
+        "ground_truth": "2018",
+        "proposed_method_prediction": "A Madea Family Funeral ( 2018 )",
+        "vanilla_prediction": "2018",
+        "proposed_method_time_s": 0.3198,
+        "vanilla_time_s": 0.3291
+      },
+      {
+        "example_id": -353209775069332597,
+        "question": "who is the character of santa claus based on",
+        "ground_truth": "Saint Nicholas",
+        "proposed_method_prediction": "the historical Saint Nicholas",
+        "vanilla_prediction": "the British figure of Father Christmas",
+        "proposed_method_time_s": 0.4295,
+        "vanilla_time_s": 0.4175
+      },
+      {
+        "example_id": -296081142113102965,
+        "question": "what is the role of a bishop in the bible",
+        "ground_truth": "ordain presbyters / bishops and to exercise general oversight",
+        "proposed_method_prediction": "to exercise general oversight",
+        "vanilla_prediction": "general oversight",
+        "proposed_method_time_s": 0.2947,
+        "vanilla_time_s": 0.4033
+      },
+      {
+        "example_id": -51011525148659082,
+        "question": "when do you hear the lub and dub sounds of the heart",
+        "ground_truth": "the closing of the atrioventricular valves and semilunar valves , respectively",
+        "proposed_method_prediction": "each heartbeat",
+        "vanilla_prediction": "in sequence with each heartbeat",
+        "proposed_method_time_s": 0.5032,
+        "vanilla_time_s": 0.5578
+      },
+      {
+        "example_id": 246927435436425337,
+        "question": "what is the story of around the world in 80 days",
+        "ground_truth": "Phileas Fogg of London and his newly employed French valet Passepartout attempt to circumnavigate the world in 80 days on a £ 20,000 wager ( £ 2,075,400 in 2017 ) set by his friends at the Reform Club",
+        "proposed_method_prediction": "Phileas Fogg of London and his newly employed French valet Passepartout attempt to circumnavigate the world in 80 days on a £ 20,000 wager ( £ 2,075,400 in 2017 ) set by his friends at the Reform Club",
+        "vanilla_prediction": "Phileas Fogg of London and his newly employed French valet Passepartout attempt to circumnavigate the world in 80 days on a £ 20,000 wager ( £ 2,075,400 in 2017 )",
+        "proposed_method_time_s": 1.1381,
+        "vanilla_time_s": 0.9506
+      },
+      {
+        "example_id": 349164000093084738,
+        "question": "what does the yellow section of the erg contain",
+        "ground_truth": "references the material in order of its assigned 4 - digit ID number / UN / NA number",
+        "proposed_method_prediction": "the material in order of its assigned 4 - digit ID number / UN / NA number ( which is often placarded with the other hazardous materials placards )",
+        "vanilla_prediction": "hazardous materials",
+        "proposed_method_time_s": 0.5879,
+        "vanilla_time_s": 0.2419
+      },
+      {
+        "example_id": 386193802683148237,
+        "question": "when was the dome of the rock completed",
+        "ground_truth": "691 CE",
+        "proposed_method_prediction": "691 CE",
+        "vanilla_prediction": "1015",
+        "proposed_method_time_s": 0.2346,
+        "vanilla_time_s": 0.2541
+      },
+      {
+        "example_id": 397204824317594616,
+        "question": "what is the final season of downton abbey",
+        "ground_truth": "six",
+        "proposed_method_prediction": "25 December 2015",
+        "vanilla_prediction": "in the autumn of 2015",
+        "proposed_method_time_s": 0.2342,
+        "vanilla_time_s": 0.2656
+      },
+      {
+        "example_id": 647659679149316553,
+        "question": "what is the significance of the sahara desert",
+        "ground_truth": "the largest hot desert and the third largest desert in the world after Antarctica and the Arctic",
+        "proposed_method_prediction": "the third largest desert in the world",
+        "vanilla_prediction": "the largest hot desert",
+        "proposed_method_time_s": 0.3413,
+        "vanilla_time_s": 0.3268
+      },
+      {
+        "example_id": 1012541351190124000,
+        "question": "what is the new touchback rule in the nfl",
+        "ground_truth": "a touchback on kickoffs at the 25 - yard line instead of the previous 20 - yard line",
+        "proposed_method_prediction": "a touchback on kickoffs at the 25 - yard line instead of the previous 20 - yard line",
+        "vanilla_prediction": "at the 25 - yard line instead of the previous 20 - yard line",
+        "proposed_method_time_s": 0.4924,
+        "vanilla_time_s": 0.4858
+      },
+      {
+        "example_id": 1653574612763270615,
+        "question": "where is thank you for your service based",
+        "ground_truth": "Fort Riley , Kansas",
+        "proposed_method_prediction": "the vicinity of Fort Riley , Kansas",
+        "vanilla_prediction": "in the vicinity of Fort Riley , Kansas",
+        "proposed_method_time_s": 0.53,
+        "vanilla_time_s": 0.6484
+      },
+      {
+        "example_id": 1724755303330589440,
+        "question": "jawaharlal nehru centre for advanced scientific research jakkur campus",
+        "ground_truth": "Jakkur , Bangalore , India",
+        "proposed_method_prediction": "Jawaharlal Nehru Centre for Advanced Scientific Research",
+        "vanilla_prediction": "a multidisciplinary research institute",
+        "proposed_method_time_s": 0.3515,
+        "vanilla_time_s": 0.2863
+      },
+      {
+        "example_id": 1875157261182375834,
+        "question": "who won the wwe championship elimination chamber 2018",
+        "ground_truth": "Roman Reigns",
+        "proposed_method_prediction": "Alexa Bliss",
+        "vanilla_prediction": "Roman Reigns",
+        "proposed_method_time_s": 0.2374,
+        "vanilla_time_s": 0.2635
+      },
+      {
+        "example_id": 2008586078459357664,
+        "question": "in a microsoft access table what does a row of information represent",
+        "ground_truth": "a single , implicitly structured data item in a table",
+        "proposed_method_prediction": "a single , implicitly structured data item",
+        "vanilla_prediction": "a single , implicitly structured data item in a table",
+        "proposed_method_time_s": 0.2276,
+        "vanilla_time_s": 0.293
+      },
+      {
+        "example_id": 2186635546724071017,
+        "question": "where is the island in and then there were none",
+        "ground_truth": "off the Devon coast of England",
+        "proposed_method_prediction": "Devon",
+        "vanilla_prediction": "off the Devon coast of England",
+        "proposed_method_time_s": 0.3027,
+        "vanilla_time_s": 0.3325
+      },
+      {
+        "example_id": 2304123337731564294,
+        "question": "what do the economic systems of the uk germany and russia have in common",
+        "ground_truth": "reached an economy of at least US $2 trillion by GDP in nominal or PPP terms",
+        "proposed_method_prediction": "economies of at least US $2 trillion by GDP in nominal or PPP terms",
+        "vanilla_prediction": "both countries have reached an economy of at least US $2 trillion by GDP in nominal or PPP terms",
+        "proposed_method_time_s": 0.3611,
+        "vanilla_time_s": 0.4773
+      },
+      {
+        "example_id": 2308037668603022608,
+        "question": "what determines the number of senate seats held by each state",
+        "ground_truth": "Article One of the United States Constitution",
+        "proposed_method_prediction": "fifty states currently in the Union",
+        "vanilla_prediction": "fifty states",
+        "proposed_method_time_s": 0.1902,
+        "vanilla_time_s": 0.1936
+      },
+      {
+        "example_id": 2316219466458554937,
+        "question": "aphasia is a term defining difficulty or loss of ability to",
+        "ground_truth": "comprehend and formulate language",
+        "proposed_method_prediction": "communicate",
+        "vanilla_prediction": "comprehend and formulate language",
+        "proposed_method_time_s": 0.1902,
+        "vanilla_time_s": 0.1936
+      },
+      {
+        "example_id": 2926188566262428863,
+        "question": "what does it mean if a car is a fleet vehicle",
+        "ground_truth": "groups of motor vehicles owned or leased by a business , government agency or other organization rather than by an individual or family",
+        "proposed_method_prediction": "group of motor vehicles",
+        "vanilla_prediction": "a group of motor vehicles owned or leased by a business , government agency or other organization",
+        "proposed_method_time_s": 0.4061,
+        "vanilla_time_s": 0.4437
+      },
+      {
+        "example_id": 3248410603422198181,
+        "question": "who conducted the opening concert at carnegie hall",
+        "ground_truth": "maestro Walter Damrosch and great Russian composer Pyotr Ilyich Tchaikovsky",
+        "proposed_method_prediction": "Walter Damrosch",
+        "vanilla_prediction": "Pyotr Ilyich Tchaikovsky",
+        "proposed_method_time_s": 0.2887,
+        "vanilla_time_s": 0.289
+      },
+      {
+        "example_id": 3349644992728619890,
+        "question": "who is the girl in green day 21 guns",
+        "ground_truth": "Lisa Stelly",
+        "proposed_method_prediction": "Lisa Stelly",
+        "vanilla_prediction": "Christian",
+        "proposed_method_time_s": 0.3702,
+        "vanilla_time_s": 0.2706
+      },
+      {
+        "example_id": 3371658713053301705,
+        "question": "what year did seven nation army come out",
+        "ground_truth": "March 2003",
+        "proposed_method_prediction": "2003",
+        "vanilla_prediction": "March 2003",
+        "proposed_method_time_s": 0.2887,
+        "vanilla_time_s": 0.289
+      },
+      {
+        "example_id": 3394342679382237403,
+        "question": "where did the last name taylor originate from",
+        "ground_truth": "Old French",
+        "proposed_method_prediction": "France",
+        "vanilla_prediction": "French",
+        "proposed_method_time_s": 0.5057,
+        "vanilla_time_s": 0.5475
+      },
+      {
+        "example_id": 3475968917821630324,
+        "question": "what was the most important new religious figure of the new kingdom of ancient egypt",
+        "ground_truth": "the Aten , a representation of the Egyptian god , Ra",
+        "proposed_method_prediction": "Akhenaten",
+        "vanilla_prediction": "Amenhotep IV",
+        "proposed_method_time_s": 0.198,
+        "vanilla_time_s": 0.1789
+      },
+      {
+        "example_id": 3587867296617760276,
+        "question": "the vascular layer of the eye is the",
+        "ground_truth": "The uvea",
+        "proposed_method_prediction": "vascular middle layer",
+        "vanilla_prediction": "vascular middle layer of the eye",
+        "proposed_method_time_s": 0.9882,
+        "vanilla_time_s": 0.9399
+      },
+      {
+        "example_id": 3616632103136384232,
+        "question": "which type of hematoma is a result of torn bridging meningeal veins",
+        "ground_truth": "subdural hematoma ( SDH )",
+        "proposed_method_prediction": "subdural hemorrhages",
+        "vanilla_prediction": "subdural hematomas",
+        "proposed_method_time_s": 0.2438,
+        "vanilla_time_s": 0.2716
+      },
+      {
+        "example_id": 3630480194417653112,
+        "question": "what is henry james the real thing about",
+        "ground_truth": "the unfortunate victims of a society in which reality and representation are closely intertwined in ways that make art a difficult project to untangle the two",
+        "proposed_method_prediction": "a short story by Henry James , first syndicated by S.S. McClure in multiple American newspapers and then published in the British publication Black and White in April 1892 and the following year as the title story in the collection , The Real Thing and Other Stories published by Macmillan .",
+        "vanilla_prediction": "a short story by Henry James",
+        "proposed_method_time_s": 1.2283,
+        "vanilla_time_s": 0.4681
+      },
+      {
+        "example_id": 3631867991857999976,
+        "question": "other than water what else has hydrogen bonds",
+        "ground_truth": "inorganic molecules such as water",
+        "proposed_method_prediction": "inorganic molecules such as water",
+        "vanilla_prediction": "other than water",
+        "proposed_method_time_s": 0.5821,
+        "vanilla_time_s": 0.6458
+      },
+      {
+        "example_id": 4053461415821443645,
+        "question": "who wrote song what a friend we have in jesus",
+        "ground_truth": "Joseph M. Scriven",
+        "proposed_method_prediction": "Joseph M. Scriven",
+        "vanilla_prediction": "Charles Crozat Converse",
+        "proposed_method_time_s": 0.5032,
+        "vanilla_time_s": 0.5578
+      },
+      {
+        "example_id": 4323871331649279373,
+        "question": "who invented the printing press and in what year",
+        "ground_truth": "Johannes Gutenberg around 1440",
+        "proposed_method_prediction": "the Holy Roman Empire",
+        "vanilla_prediction": "the German Johannes Gutenberg",
+        "proposed_method_time_s": 0.2883,
+        "vanilla_time_s": 0.3022
+      },
+      {
+        "example_id": 4403328729170059703,
+        "question": "krypton-85 decays by emission of a beta particle. the product of this decay is",
+        "ground_truth": "rubidium - 85",
+        "proposed_method_prediction": "rubidium - 85",
+        "vanilla_prediction": "alpha particle emission",
+        "proposed_method_time_s": 0.3195,
+        "vanilla_time_s": 0.3281
+      },
+      {
+        "example_id": 4432617520373099396,
+        "question": "total strength of judges in supreme court of india",
+        "ground_truth": "24 judges",
+        "proposed_method_prediction": "24",
+        "vanilla_prediction": "31",
+        "proposed_method_time_s": 0.1999,
+        "vanilla_time_s": 0.1986
+      },
+      {
+        "example_id": 4440911260005876349,
+        "question": "state the position of india in terms of population size",
+        "ground_truth": "second",
+        "proposed_method_prediction": "1.2 billion",
+        "vanilla_prediction": "2.4 %",
+        "proposed_method_time_s": 0.2947,
+        "vanilla_time_s": 0.4033
+      },
+      {
+        "example_id": 4609757593232160603,
+        "question": "the supreme court only have original jurisdiction in two kinds of cases",
+        "ground_truth": "in all cases affecting ambassadors , other public ministers and consuls , and those in which a state shall be party .",
+        "proposed_method_prediction": "disputes between two or more states",
+        "vanilla_prediction": "cases that have not been considered by a lower court",
+        "proposed_method_time_s": 0.2211,
+        "vanilla_time_s": 0.3146
+      },
+      {
+        "example_id": 4876812477232188511,
+        "question": "where does the last name perry come from",
+        "ground_truth": "Old English pyrige ( pear tree )",
+        "proposed_method_prediction": "Old English pyrige",
+        "vanilla_prediction": "Old English pyrige ( pear tree )",
+        "proposed_method_time_s": 0.2197,
+        "vanilla_time_s": 0.3119
+      },
+      {
+        "example_id": 5021176063184370614,
+        "question": "where does the formation of atp take place",
+        "ground_truth": "mitochondrial membrane in eukaryotes",
+        "proposed_method_prediction": "mitochondrial membrane",
+        "vanilla_prediction": "mitochondrial membrane in eukaryotes or the plasma membrane in bacteria",
+        "proposed_method_time_s": 0.4866,
+        "vanilla_time_s": 0.5371
+      },
+      {
+        "example_id": 5117748440024890059,
+        "question": "what event caused the duma to establish a provisional government in russia",
+        "ground_truth": "the abdication of Tsar Nicholas II of the Russian Empire",
+        "proposed_method_prediction": "the abdication of Tsar Nicholas II of the Russian Empire on 2 March ( 15 March , New Style ) 1917",
+        "vanilla_prediction": "the abdication of Tsar Nicholas II of the Russian Empire",
+        "proposed_method_time_s": 0.5616,
+        "vanilla_time_s": 0.4162
+      },
+      {
+        "example_id": 5209333152825126410,
+        "question": "chris cornell she's going to change the world",
+        "ground_truth": "Ca n't Change Me",
+        "proposed_method_prediction": "rock balladeer",
+        "vanilla_prediction": "`` Ca n't Change Me , ''",
+        "proposed_method_time_s": 0.2346,
+        "vanilla_time_s": 0.2541
+      },
+      {
+        "example_id": 5482109430613356344,
+        "question": "where did the rulers of the qing dynasty originate",
+        "ground_truth": "Manchuria",
+        "proposed_method_prediction": "Jurchen Aisin Gioro clan",
+        "vanilla_prediction": "the Jurchen Aisin Gioro clan",
+        "proposed_method_time_s": 0.3039,
+        "vanilla_time_s": 0.3267
+      },
+      {
+        "example_id": 5487540490957673313,
+        "question": "who has more super bowl wins nfc or afc",
+        "ground_truth": "NFC / NFL",
+        "proposed_method_prediction": "Nineteen different franchises",
+        "vanilla_prediction": "NFC / NFL",
+        "proposed_method_time_s": 0.3659,
+        "vanilla_time_s": 0.3732
+      },
+      {
+        "example_id": 5518515944351776633,
+        "question": "what was the purpose of the bantu education act",
+        "ground_truth": "legalised several aspects of the apartheid system",
+        "proposed_method_prediction": "enforcing racially separated educational facilities",
+        "vanilla_prediction": "to direct black or non-white youth to the unskilled labour market",
+        "proposed_method_time_s": 0.2947,
+        "vanilla_time_s": 0.4033
+      },
+      {
+        "example_id": 5864829737616734737,
+        "question": "difference between deep cycle and starting marine battery",
+        "ground_truth": "Alloys used for the plates in a deep cycle battery may contain more antimony than that of starting batteries",
+        "proposed_method_prediction": "lead battery plates",
+        "vanilla_prediction": "thicker battery plates resist corrosion through extended charge and discharge cycles",
+        "proposed_method_time_s": 0.402,
+        "vanilla_time_s": 0.4693
+      },
+      {
+        "example_id": 6013074568970466569,
+        "question": "where did chocolate originate the americas spain asia",
+        "ground_truth": "Americas",
+        "proposed_method_prediction": "from the port of Veracruz",
+        "vanilla_prediction": "the colonization of the Americas began",
+        "proposed_method_time_s": 0.5683,
+        "vanilla_time_s": 0.601
+      },
+      {
+        "example_id": 6023159022192897262,
+        "question": "when does a limit of a function not exist",
+        "ground_truth": "if some inputs very close to p are taken to outputs that stay a fixed distance apart",
+        "proposed_method_prediction": "when the function is applied to any input sufficiently close to p",
+        "vanilla_prediction": "when f is applied to any input sufficiently close to p",
+        "proposed_method_time_s": 0.2836,
+        "vanilla_time_s": 0.2675
+      },
+      {
+        "example_id": 6341281025332348318,
+        "question": "who picks the players in the nfl draft",
+        "ground_truth": "each team",
+        "proposed_method_prediction": "the league",
+        "vanilla_prediction": "the league 's most common source of player recruitment",
+        "proposed_method_time_s": 0.4061,
+        "vanilla_time_s": 0.4437
+      },
+      {
+        "example_id": 6744148144009704081,
+        "question": "where is nathan's hotdog eating contest held",
+        "ground_truth": "at Nathan 's Famous Corporation 's original , and best - known restaurant at the corner of Surf and Stillwell Avenues in Coney Island , a neighborhood of Brooklyn , New York City",
+        "proposed_method_prediction": "at Nathan 's Famous Corporation 's original , and best - known restaurant at the corner of Surf and Stillwell Avenues in Coney Island , a neighborhood of Brooklyn , New York City",
+        "vanilla_prediction": "Independence Day",
+        "proposed_method_time_s": 0.7093,
+        "vanilla_time_s": 0.5076
+      },
+      {
+        "example_id": 6766518966445775953,
+        "question": "who wants a heart in the wizard of oz",
+        "ground_truth": "the Tin Woodman",
+        "proposed_method_prediction": "Ku - Klip the tinsmith",
+        "vanilla_prediction": "the witch",
+        "proposed_method_time_s": 0.5636,
+        "vanilla_time_s": 0.5128
+      },
+      {
+        "example_id": 6787462403220370958,
+        "question": "where is the 7th game of the world series played",
+        "ground_truth": "at the site of the team holding the home advantage across the series",
+        "proposed_method_prediction": "at the site of the team holding the home advantage across the series",
+        "vanilla_prediction": "the site of the team holding the home advantage across the series",
+        "proposed_method_time_s": 0.5252,
+        "vanilla_time_s": 0.5039
+      },
+      {
+        "example_id": 6931174159985320066,
+        "question": "oklahoma's 10 geographic regions are defined by surface features called",
+        "ground_truth": "ecological regions",
+        "proposed_method_prediction": "arid plains",
+        "vanilla_prediction": "geography",
+        "proposed_method_time_s": 0.2748,
+        "vanilla_time_s": 0.3447
+      },
+      {
+        "example_id": 7716908966138948936,
+        "question": "how have scientists used nuclear power as a fuel for spacecraft",
+        "ground_truth": "either small fission systems or radioactive decay for electricity or heat",
+        "proposed_method_prediction": "for scientific observation , as in a Mössbauer spectrometer",
+        "vanilla_prediction": "for scientific observation",
+        "proposed_method_time_s": 0.3623,
+        "vanilla_time_s": 0.3398
+      },
+      {
+        "example_id": 7917739999298880581,
+        "question": "is the right to life liberty and the pursuit of happiness in the constitution",
+        "ground_truth": "Chapter III , Article 13 of the 1947 Constitution of Japan",
+        "proposed_method_prediction": "the Fifth Amendment",
+        "vanilla_prediction": "The Fifth Amendment",
+        "proposed_method_time_s": 0.4295,
+        "vanilla_time_s": 0.4175
+      },
+      {
+        "example_id": 8553713904242169921,
+        "question": "where does the last name orozco originate from",
+        "ground_truth": "Spanish / Basque origin",
+        "proposed_method_prediction": "Spanish / Basque",
+        "vanilla_prediction": "Spanish / Basque origin",
+        "proposed_method_time_s": 0.2271,
+        "vanilla_time_s": 0.1914
+      },
+      {
+        "example_id": 8730028009751947933,
+        "question": "where are the cones in the eye located",
+        "ground_truth": "in the retina",
+        "proposed_method_prediction": "centralis",
+        "vanilla_prediction": "fovea centralis",
+        "proposed_method_time_s": 0.2321,
+        "vanilla_time_s": 0.2207
+      }
+    ]
+  }
+}

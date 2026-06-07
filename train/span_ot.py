@@ -34,9 +34,12 @@ Pipeline (per sample, per training step):
     setting rules out. Per-side aggregation respects the span structure:
     both sides aggregate over **their own** rows of the span before any
     cross-side comparison.
-4.  Sort spans by ``g(S_m)``, designate the top ``r%`` as high-priority
-    (weight ``1.0``); the rest are low-priority (weight ``delta``). This
-    is Eq. 12-13.
+4.  Filter to spans where ``g(S_m) > 0`` (student entropy strictly exceeds
+    teacher entropy — the span is worth extra supervision). Among those,
+    sort descending and designate the top ``r%`` as high-priority (weight
+    ``1.0``); the rest are low-priority (weight ``delta``). Spans with
+    ``g(S_m) <= 0`` are unconditionally assigned weight ``delta``. This
+    is Eq. 12-13 with an additional positivity gate.
 5.  Build a per-position weight vector ``omega[t]`` of length ``T_max``:
        * ``mu(span(t))``     if teacher position ``t`` falls in any aligned span
        * ``1.0``              otherwise (safe fallback only — see below)
@@ -245,15 +248,29 @@ def compute_position_weights_one_sample(
     if not spans:
         return weights
 
-    # Sort descending by gap, top-r% receive weight 1.0; rest receive delta.
-    spans.sort(key=lambda x: x[1], reverse=True)
+    # Only spans whose entropy gap > 0 are selected for high-priority weighting.
+    # A gap <= 0 means the student is already at least as confident as the teacher
+    # on that span — boosting it further adds noise rather than signal.
+    pos_spans = [(t_idx, gap) for t_idx, gap in spans if gap > 0]
+    neg_spans = [(t_idx, gap) for t_idx, gap in spans if gap <= 0]
+
+    for t_idx, _ in neg_spans:
+        for pos in t_idx:
+            if 0 <= pos < T_max:
+                weights[pos] = float(low_delta)
+
+    if not pos_spans:
+        return weights
+
+    # Sort positive-gap spans descending; top-r% receive weight 1.0; rest receive delta.
+    pos_spans.sort(key=lambda x: x[1], reverse=True)
     if top_r >= 1.0:
-        num_high = len(spans)
+        num_high = len(pos_spans)
     else:
         # ceil so any positive top_r selects at least one span when len>=1
-        num_high = max(1, int(math.ceil(top_r * len(spans))))
+        num_high = max(1, int(math.ceil(top_r * len(pos_spans))))
 
-    for span_rank, (t_idx, _) in enumerate(spans):
+    for span_rank, (t_idx, _) in enumerate(pos_spans):
         mu = 1.0 if span_rank < num_high else float(low_delta)
         for pos in t_idx:
             if 0 <= pos < T_max:
