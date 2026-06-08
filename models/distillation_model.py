@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import json
+import os
 import numpy as np
 from transformers import AutoTokenizer
 import re
@@ -353,7 +354,7 @@ class DistillationLoss(nn.Module):
                 f"top_r={self.span_top_r}, low_delta={self.span_low_delta}"
             )
 
-    def forward(self, epoch, student_predictions, teacher_predictions, student_targets, teacher_targets, rank=0):
+    def forward(self, epoch, student_predictions, teacher_predictions, student_targets, teacher_targets, rank=0, step=None):
         student = student_predictions.logits
         teacher = teacher_predictions.logits
         if self.store_teacher_logits:
@@ -482,6 +483,43 @@ class DistillationLoss(nn.Module):
                 aggregation=self.span_aggregation,
                 ignore_index=self.ignore_index,
             )
+
+        # --- SpanOT-KD side analysis (read-only, env-gated) ---
+        # When SPANOT_TRACE is unset this is a single env read and a no-op, so
+        # the loss math above is unchanged. When set on rank 0 at the configured
+        # (step, b) it dumps every intermediate of the weight construction for
+        # one deterministic sample (see train.span_trace).
+        if self.span_kd_enabled and self.student_tokenizer is not None and self.teacher_tokenizer is not None:
+            from train.span_trace import should_trace, trace_sample
+            _trace = should_trace(step, rank)
+            if _trace is not None:
+                trace_b, _ = _trace
+                if 0 <= trace_b < student.size(0):
+                    try:
+                        trace_sample(
+                            student_probs=student[trace_b].detach(),
+                            teacher_probs=teacher[trace_b].detach(),
+                            student_raw_logits=student_predictions.logits[trace_b].detach(),
+                            teacher_raw_logits=teacher_predictions.logits[trace_b].detach(),
+                            student_size=int(student_answer_size[trace_b]),
+                            teacher_size=int(teacher_answer_size[trace_b]),
+                            student_answer_index=int(student_answer_index[trace_b]),
+                            teacher_answer_index=int(teacher_answer_index[trace_b]),
+                            student_label_row=student_targets[trace_b],
+                            teacher_label_row=teacher_targets[trace_b],
+                            student_tokenizer=self.student_tokenizer,
+                            teacher_tokenizer=self.teacher_tokenizer,
+                            student_temperature=self.student_temperature,
+                            teacher_temperature=self.teacher_temperature,
+                            top_r=self.span_top_r,
+                            low_delta=self.span_low_delta,
+                            aggregation=self.span_aggregation,
+                            ignore_index=self.ignore_index,
+                            meta={"seed": os.environ.get("SPANOT_TRACE_SEED"),
+                                  "step": int(step), "b": int(trace_b), "epoch": int(epoch)},
+                        )
+                    except Exception as _e:
+                        print(f"[SpanOT-trace] failed (non-fatal): {_e}", flush=True)
 
         # --- Distillation loss components ---
         # (1) L1 / OT-style component: per-sample |p_s - p_t| summed over vocab, averaged over tokens.

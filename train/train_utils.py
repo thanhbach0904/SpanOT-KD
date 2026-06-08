@@ -370,7 +370,7 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                             kl_comp,
                             sinkhorn_comp,
                             diagnostics,
-                        ) = distillation_loss(epoch, student_output, teacher_output, batch['student_labels'], batch['teacher_labels'], rank=rank)
+                        ) = distillation_loss(epoch, student_output, teacher_output, batch['student_labels'], batch['teacher_labels'], rank=rank, step=step)
                     else:
                         loss = model(**batch).loss
                         diagnostics = None
@@ -426,7 +426,7 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                             kl_comp,
                             sinkhorn_comp,
                             diagnostics,
-                        ) = distillation_loss(epoch, student_output, teacher_output, batch['student_labels'], batch['teacher_labels'], rank=rank)
+                        ) = distillation_loss(epoch, student_output, teacher_output, batch['student_labels'], batch['teacher_labels'], rank=rank, step=step)
                     ran_grad_probe = True
 
                 loss = loss / gradient_accumulation_steps
