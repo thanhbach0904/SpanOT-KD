@@ -51,6 +51,31 @@ def _gold_answer(item):
     return "<no answer>"
 
 
+def _gold_answer_word_count(item):
+    """Number of whitespace-separated words in the sample's gold answer."""
+    answer = _gold_answer(item)
+    if answer == "<no answer>":
+        return 0
+    return len(answer.split())
+
+
+def _gold_answer_char_count(item):
+    """Number of characters in the sample's gold answer."""
+    answer = _gold_answer(item)
+    if answer == "<no answer>":
+        return 0
+    return len(answer)
+
+
+def compute_avg_gold_answer_length(dataset):
+    """Average word and character count of gold answers across an entire dataset split."""
+    word_counts = [_gold_answer_word_count(item) for item in dataset]
+    char_counts = [_gold_answer_char_count(item) for item in dataset]
+    avg_words = sum(word_counts) / len(word_counts) if word_counts else 0.0
+    avg_chars = sum(char_counts) / len(char_counts) if char_counts else 0.0
+    return avg_words, avg_chars
+
+
 def _build_prompt(item):
     """Construct the prompt exactly as qed.py does for a non-chat / 0-shot model."""
     return create_prompt(
@@ -130,6 +155,11 @@ def main():
     dataset = load_from_disk(QED_DISK_PATH)[args.split]
     print(f"Split '{args.split}': {len(dataset):,} samples")
     print(f"Columns: {dataset.column_names}")
+
+    avg_words, avg_chars = compute_avg_gold_answer_length(dataset)
+    print(f"Average gold answer length: {avg_words:.2f} words / {avg_chars:.2f} characters "
+          f"(over {len(dataset):,} samples in split '{args.split}')")
+
     print(f"\nDisplaying {args.n} sample(s)  (split='{args.split}', seed={args.seed})\n")
 
     samples = dataset.shuffle(seed=args.seed).select(range(min(args.n, len(dataset))))

@@ -1,139 +1,286 @@
-# Multi-Level Optimal Transport for Universal Cross-Tokenizer Knowledge Distillation on Language Models
-The paper has been accepted as AAAI 2025 oral.
+# SpanOT-KD: Span-Selective Knowledge Distillation
 
-## Download Pre-trained Teacher Models
+This repository extends **Multi-Level Optimal Transport for Universal Cross-Tokenizer Knowledge Distillation on Language Models** (Cui et al., AAAI 2025 oral) with **SpanOT-KD**, a span-selective distillation mechanism that reweights the HAD/SL/SD loss components by a per-span entropy-gap importance weight (see "Citation" below for the base method). When the SpanOT-KD flags are disabled, training is byte-for-byte identical to vanilla MultiLevelOT.
 
-Teacher models can be downloaded from Hugging Face. And then you can download them in :
+## Download Pre-trained Teacher Model
 
-$HOME/models/
+The teacher model used in this setup is Llama-2-7b-chat-hf. Download it from Hugging Face into `$HOME/models/`:
 
-Llama2-7b-chat-hf:	[meta-llama/Llama-2-7b-chat-hf](https://huggingface.co/meta-llama/Llama-2-7b-chat-hf) 
+Llama2-7b-chat-hf: [meta-llama/Llama-2-7b-chat-hf](https://huggingface.co/meta-llama/Llama-2-7b-chat-hf)
 
-Meta-Llama-3-8B-Instruct:	[meta-llama/Meta-Llama-3-8B-Instruct](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct)
+```bash
+hf download meta-llama/Llama-2-7b-chat-hf --local-dir $HOME/models/meta-llama/Llama-2-7b-chat-hf
+mv $HOME/models/meta-llama/Llama-2-7b-chat-hf $HOME/models/Llama-2-7b-chat-hf
+```
 
-Meta-Llama-3.1-8B-Instruct:	[meta-llama/Meta-Llama-3.1-8B-Instruct](https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct)
+## Download Pre-trained Student Models
 
-Mistral-7B-Instruct-v0.3:	[mistralai/Mistral-7B-Instruct-v0.3](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3)
-
-Qwen-7B-Chat:	[Qwen/Qwen-7B-Chat](https://huggingface.co/Qwen/Qwen-7B-Chat)
-
-Qwen1.5-7B-Chat:	[Qwen/Qwen1.5-7B-Chat](https://huggingface.co/Qwen/Qwen1.5-7B-Chat)
-
-## Download Pre-trained Student Models:
-
-Student models can be downloaded from Hugging Face. And then you can download them in :
-
-$HOME/Multi-Level-OT/EleutherAI/
-
-pythia-160m: [EleutherAI/pythia-160m](https://huggingface.co/EleutherAI/pythia-160m)
+Student models are downloaded from Hugging Face into `$HOME/SpanOT-KD/EleutherAI/`:
 
 opt-350m: [facebook/opt-350m](https://huggingface.co/facebook/opt-350m)
 
 pythia-410m: [EleutherAI/pythia-410m](https://huggingface.co/EleutherAI/pythia-410m)
 
-bloomz-560m: [bigscience/bloomz-560m](https://huggingface.co/bigscience/bloomz-560m) (You had better set batchsize=1 for dialogsum or fairytale if you only use a single A100-80G.)
+## Dataset
 
-## Student Checkpoints
-The distilled student model for each task reported in the paper can be downloaded using the following link:
-[https://drive.google.com/drive/folders/1O6k6THm_PjqNybDixppXhad0Nyk-xIjB?usp=drive_link](https://drive.google.com/drive/folders/1O6k6THm_PjqNybDixppXhad0Nyk-xIjB?usp=drive_link) &
-[https://drive.google.com/drive/folders/1ZE_wu0Ey2KpKrjq3NA0VgAvyhynOR6a4?usp=sharing](https://drive.google.com/drive/folders/1ZE_wu0Ey2KpKrjq3NA0VgAvyhynOR6a4?usp=sharing
-)
-
-## Datasets
-We have uploaded llm_distillation/datasets on google drive.[https://drive.google.com/drive/folders/1ZE_wu0Ey2KpKrjq3NA0VgAvyhynOR6a4?usp=sharing](https://drive.google.com/drive/folders/1ZE_wu0Ey2KpKrjq3NA0VgAvyhynOR6a4?usp=sharing
-) You need to download by yourself, because it is too big to git push.
+This setup uses **QED**. The processed dataset is expected at `$HOME/SpanOT-KD/llm_distillation/datasets/processed/qed`. If you do not have it locally, see [Datasets](#datasets) below for the source and the transfer steps to produce the teacher-labeled `qedllama` variant used by the distillation loader.
 
 ## Task-specific Student Model Distillation
 
-
-For distillation, several parameters can be set:
-- `--model_name`: The ID of the student model (HuggingFace repository ID).
+For distillation, the relevant parameters are:
+- `--model_name`: The path/ID of the student model.
 - `--lr`: Learning rate for the training process.
 - `--num_epochs`: Number of epochs for training.
 - `--batch_size_training`: Batch size for training.
 - `--val_batch_size`: Batch size for validation.
-- `--dataset.file`: Path to the dataset file.
+- `--dataset.file`: Path to the dataset loader file.
 - `--output_dir`: Directory to save the output.
 - `--distillation`: Activate distillation.
-- `--distillation_config.model_name`: The ID of the teacher model (HuggingFace repository ID).
-- `--distillation_config.enable_fsdp`: Enable Fully Sharded Data Parallelism (FSDP).
-- `--distillation_config.pure_bf16`: Use pure BF16 precision.
-- `--distillation_config.distil_factor`: Factor for distillation loss.
-- `--save_step`: Interval for saving checkpoints during training.
-- `--encoder_decoder`: Specify this parameter if the student model follows an encoder-decoder architecture.
-- `--f`: Choose the method. f=1: ours (fast); f=2: ours (greedy).
+- `--distillation_config_model_name`: The path/ID of the teacher model.
+- `--distillation_config_pure_bf16`: Use pure BF16 precision.
+- `--distillation_config_distil_factor`: Weight of the distillation loss term.
+- `--dev_split_ratio` / `--dev_split_seed`: Seeded dev carve-out from the on-disk train split (the on-disk `validation` split is the held-out test set and is never used for selection).
+- `--early_stopping_patience`: Epochs of no dev-loss improvement before stopping.
+- `--dev_gen_batch_size`: Batch size for the in-training dev-F1 generation pass.
+- `--f`: Distillation alignment method. `f=1`: ours (fast); `f=2`: ours (greedy).
+- `--seed`: Global seed (also drives the BatchSampler shuffle and, unless overridden, `--dev_split_seed`).
 
-# Example
+SpanOT-KD-specific flags (no-ops unless `--distillation_config_span_kd_enabled` is set):
+- `--distillation_config_span_kd_enabled`: Master switch for the span-selective reweighting.
+- `--distillation_config_span_aggregation {mean,sum}`: Per-span entropy-gap aggregation.
+- `--distillation_config_span_low_delta`: Weight assigned to low-priority (non top-r) spans.
+- `--distillation_config_span_top_r_sweep`: Instead of a fixed `--distillation_config_span_top_r`, train 3 students per seed with `span_top_r ∈ {0.3, 0.5, 0.7}` and keep the best by dev F1. Requires `--distillation` and `--distillation_config_span_kd_enabled`.
 
-Below is an example bash command for running the distillation process:
+## Example Commands
 
-```bash
-#export HOME = ""
+Below are the reference commands for this setup: OPT-350m and Pythia-410m students distilled from Llama-2-7b-chat-hf on QED, plus the mean-vs-sum span-aggregation ablation.
 
-export CUDA_VISIBLE_DEVICES=0 python finetuning.py \
---model_name $HOME/Multi-Level-OT/EleutherAI/pythia-410m \
---dataset.file $HOME/Multi-Level-OT/llm_distillation/datasets/loader/qed.py \
---lr 1e-6 \
---num_epochs 5 \
---batch_size_training 2 \
---val_batch_size 2 \
---output_dir $HOME/Multi-Level-OT/output2 \
---distillation_config_model_name $HOME/models/meta-llama/Llama-2-7b-chat-hf \
---distillation \
---distillation_config_enable_fsdp \
---distillation_config_pure_bf16 \
---distillation_config_distil_factor 1.5 \
---save_step 2000 \
---f 1
-
-```
-
-
-
-## Dataset File
-
-Most of the datasets file have been given in "Multi-Level-OT/llm_distillation/datasets/hf/ "and "Multi-Level-OT/llm_distillation/datasets/hf/processed/" .
-
-Dialogsum: [knkarthick/dialogsum](https://huggingface.co/datasets/knkarthick/dialogsum)
-
-FairytaleQA: [WorkInTheDark/FairytaleQA](https://huggingface.co/datasets/WorkInTheDark/FairytaleQA)
-
-You need to transfer the dataset files into arrow(stream). We supply transfer.py as an example in llm_distillation/datasets/hf/fairyjsonbase/ .
-
-And if you need to add teacher models' answer as student models' label, you also need to transfer the original dataset into a new arrow dataset with the answer generated by teacher models. We use result.sh in Multi-Level-OT/  and benchmark.py in Multi-Level-OT/llm_distillation/benchmark/ to generate a json file with the answer. And the use the transfer.py in all datasets named like qedllama. Then pay attention to the corresponding benchmark.py in "Multi-Level-OT/llm_distillation/benchmark/" or loader files in "Multi-Level-OT/llm_distillation/datasets/loader/"
-
-
-
-## Evaluation
-
-You can use results.sh in "Multi-Level-OT/" to eval a teacher model or student model whether it has been distillated or not . And save the prediction answers in a json file.
-
-For example:
+### OPT-350m
 
 ```bash
-#export HOME=
+# Train (SpanOT-KD enabled, seed 42)
+CUDA_VISIBLE_DEVICES=0 python $HOME/SpanOT-KD/finetuning.py \
+  --model_name $HOME/SpanOT-KD/EleutherAI/opt-350m \
+  --dataset.file $HOME/SpanOT-KD/llm_distillation/datasets/loader/qed.py \
+  --lr 1e-6 \
+  --num_epochs 5 \
+  --batch_size_training 2 \
+  --val_batch_size 2 \
+  --output_dir $HOME/SpanOT-KD/output_qed_opt \
+  --distillation_config_model_name /workspace/models/Llama-2-7b-chat-hf \
+  --distillation \
+  --distillation_config_pure_bf16 \
+  --distillation_config_distil_factor 0.15 \
+  --dev_split_ratio 0.1 \
+  --dev_split_seed 42 \
+  --early_stopping_patience 3 \
+  --dev_gen_batch_size 2 \
+  --f 1 \
+  --distillation_config_span_kd_enabled \
+  --distillation_config_span_aggregation mean \
+  --distillation_config_span_low_delta 0.1 \
+  --distillation_config_span_top_r_sweep \
+  --seed 42
 
-export CUDA_VISIBLE_DEVICES=0 python $HOME/Multi-Level-OT/llm_distillation/benchmark/benchmark619.py \
-  --model_id "$HOME/Multi-Level-OT/results/output-qedllama-opt" \
-  --model_tokenizer "$HOME/Multi-Level-OT/EleutherAI/opt-350m" \
-  --dataset_id "$HOME/Multi-Level-OT/llm_distillation/datasets/processed/qed" \
-  --split_name "validation" \
-  --context \
-  --title \
-  --batch_size 1 \
-  --num_workers 1 \
-  --output_path "$HOME/Multi-Level-OT/test/" \
-  --number_few_shot 0 \
+# Train (vanilla MultiLevelOT baseline, seed 4)
+CUDA_VISIBLE_DEVICES=0 python $HOME/SpanOT-KD/finetuning.py \
+  --model_name $HOME/SpanOT-KD/EleutherAI/opt-350m \
+  --dataset.file $HOME/SpanOT-KD/llm_distillation/datasets/loader/qed.py \
+  --lr 1e-6 \
+  --num_epochs 5 \
+  --batch_size_training 2 \
+  --val_batch_size 2 \
+  --output_dir $HOME/SpanOT-KD/output_qed_opt \
+  --distillation_config_model_name /workspace/models/Llama-2-7b-chat-hf \
+  --distillation \
+  --distillation_config_pure_bf16 \
+  --distillation_config_distil_factor 0.15 \
+  --dev_split_ratio 0.1 \
+  --dev_split_seed 4 \
+  --early_stopping_patience 3 \
+  --dev_gen_batch_size 2 \
+  --f 1 \
+  --seed 4
+
+# Evaluate best_dev_f1 checkpoint
+CUDA_VISIBLE_DEVICES=0 python $HOME/SpanOT-KD/llm_distillation/benchmark/benchmarkqedllama.py \
+  --model_id $HOME/SpanOT-KD/output_qed_opt/best_dev_f1 \
+  --model_tokenizer $HOME/SpanOT-KD/EleutherAI/opt-350m \
+  --dataset_id $HOME/SpanOT-KD/llm_distillation/datasets/processed/qed \
+  --split_name validation \
+  --batch_size 4 \
+  --num_workers 2 \
   --context_length 1024 \
   --from_disk \
-  --task "qa" \
-  --save_predictions
+  --task qa \
+  --bfloat \
+  --save_predictions \
+  --output_path $HOME/SpanOT-KD/eval_results/qed_opt_llama/
 
+# Evaluate best_dev_loss checkpoint
+CUDA_VISIBLE_DEVICES=0 python $HOME/SpanOT-KD/llm_distillation/benchmark/benchmarkqedllama.py \
+  --model_id $HOME/SpanOT-KD/output_qed_opt/best_dev_loss \
+  --model_tokenizer $HOME/SpanOT-KD/EleutherAI/opt-350m \
+  --dataset_id $HOME/SpanOT-KD/llm_distillation/datasets/processed/qed \
+  --split_name validation \
+  --batch_size 4 \
+  --num_workers 2 \
+  --context_length 1024 \
+  --from_disk \
+  --task qa \
+  --bfloat \
+  --save_predictions \
+  --output_path $HOME/SpanOT-KD/eval_results/qed_opt_llama/
 ```
+
+### Pythia-410m
+
+```bash
+# Train (SpanOT-KD enabled, seed 4; SPANOT_TRACE* env vars enable the
+# per-sample tracer described in change_logs.md, optional)
+SPANOT_TRACE=1 SPANOT_TRACE_STEP=0 SPANOT_TRACE_B=0 SPANOT_TRACE_SEED=4 CUDA_VISIBLE_DEVICES=0 python $HOME/SpanOT-KD/finetuning.py \
+  --model_name $HOME/SpanOT-KD/EleutherAI/pythia-410m \
+  --dataset.file $HOME/SpanOT-KD/llm_distillation/datasets/loader/qed.py \
+  --lr 1e-6 \
+  --num_epochs 5 \
+  --batch_size_training 2 \
+  --val_batch_size 2 \
+  --output_dir $HOME/SpanOT-KD/output_qed_pythia \
+  --distillation_config_model_name /workspace/models/Llama-2-7b-chat-hf \
+  --distillation \
+  --distillation_config_pure_bf16 \
+  --distillation_config_distil_factor 0.15 \
+  --dev_split_ratio 0.1 \
+  --dev_split_seed 4 \
+  --early_stopping_patience 4 \
+  --dev_gen_batch_size 2 \
+  --f 1 \
+  --distillation_config_span_kd_enabled \
+  --distillation_config_span_aggregation mean \
+  --distillation_config_span_low_delta 0.1 \
+  --distillation_config_span_top_r_sweep \
+  --seed 4
+
+# Evaluate best_dev_f1 checkpoint
+CUDA_VISIBLE_DEVICES=0 python $HOME/SpanOT-KD/llm_distillation/benchmark/benchmarkqedllama.py \
+  --model_id $HOME/SpanOT-KD/output_qed_pythia/best_dev_f1 \
+  --model_tokenizer $HOME/SpanOT-KD/EleutherAI/pythia-410m \
+  --dataset_id $HOME/SpanOT-KD/llm_distillation/datasets/processed/qed \
+  --split_name validation \
+  --batch_size 4 \
+  --num_workers 2 \
+  --context_length 1024 \
+  --from_disk \
+  --task qa \
+  --bfloat \
+  --save_predictions \
+  --output_path $HOME/SpanOT-KD/eval_results/qed_pythia_llama/
+
+# Evaluate best_dev_loss checkpoint
+CUDA_VISIBLE_DEVICES=0 python $HOME/SpanOT-KD/llm_distillation/benchmark/benchmarkqedllama.py \
+  --model_id $HOME/SpanOT-KD/output_qed_pythia/best_dev_loss \
+  --model_tokenizer $HOME/SpanOT-KD/EleutherAI/pythia-410m \
+  --dataset_id $HOME/SpanOT-KD/llm_distillation/datasets/processed/qed \
+  --split_name validation \
+  --batch_size 4 \
+  --num_workers 2 \
+  --context_length 1024 \
+  --from_disk \
+  --task qa \
+  --bfloat \
+  --save_predictions \
+  --output_path $HOME/SpanOT-KD/eval_results/qed_pythia_llama/
+```
+
+### Ablation study (mean vs. sum span aggregation)
+
+```bash
+# OPT-350m, span_aggregation=sum, seed 94
+CUDA_VISIBLE_DEVICES=0 python $HOME/SpanOT-KD/finetuning.py \
+  --model_name $HOME/SpanOT-KD/EleutherAI/opt-350m \
+  --dataset.file $HOME/SpanOT-KD/llm_distillation/datasets/loader/qed.py \
+  --lr 1e-6 \
+  --num_epochs 5 \
+  --batch_size_training 2 \
+  --val_batch_size 2 \
+  --output_dir $HOME/SpanOT-KD/output_qed_opt \
+  --distillation_config_model_name /workspace/models/Llama-2-7b-chat-hf \
+  --distillation \
+  --distillation_config_pure_bf16 \
+  --distillation_config_distil_factor 0.15 \
+  --dev_split_ratio 0.1 \
+  --dev_split_seed 94 \
+  --early_stopping_patience 3 \
+  --dev_gen_batch_size 2 \
+  --f 1 \
+  --distillation_config_span_kd_enabled \
+  --distillation_config_span_aggregation sum \
+  --distillation_config_span_low_delta 0.1 \
+  --distillation_config_span_top_r_sweep \
+  --seed 94
+
+# OPT-350m, span_aggregation=sum, seed 42 (with per-sample tracer)
+SPANOT_TRACE=1 SPANOT_TRACE_STEP=0 SPANOT_TRACE_B=0 SPANOT_TRACE_SEED=42 CUDA_VISIBLE_DEVICES=0 python $HOME/SpanOT-KD/finetuning.py \
+  --model_name $HOME/SpanOT-KD/EleutherAI/opt-350m \
+  --dataset.file $HOME/SpanOT-KD/llm_distillation/datasets/loader/qed.py \
+  --lr 1e-6 \
+  --num_epochs 5 \
+  --batch_size_training 2 \
+  --val_batch_size 2 \
+  --output_dir $HOME/SpanOT-KD/output_qed_opt \
+  --distillation_config_model_name /workspace/models/Llama-2-7b-chat-hf \
+  --distillation \
+  --distillation_config_pure_bf16 \
+  --distillation_config_distil_factor 0.15 \
+  --dev_split_ratio 0.1 \
+  --dev_split_seed 42 \
+  --early_stopping_patience 3 \
+  --dev_gen_batch_size 2 \
+  --f 1 \
+  --distillation_config_span_kd_enabled \
+  --distillation_config_span_aggregation sum \
+  --distillation_config_span_low_delta 0.1 \
+  --distillation_config_span_top_r_sweep \
+  --seed 42
+
+# Pythia-410m, vanilla MultiLevelOT baseline, seed 4
+CUDA_VISIBLE_DEVICES=0 python $HOME/SpanOT-KD/finetuning.py \
+  --model_name $HOME/SpanOT-KD/EleutherAI/pythia-410m \
+  --dataset.file $HOME/SpanOT-KD/llm_distillation/datasets/loader/qed.py \
+  --lr 1e-6 \
+  --num_epochs 5 \
+  --batch_size_training 2 \
+  --val_batch_size 2 \
+  --output_dir $HOME/SpanOT-KD/output_qed_pythia \
+  --distillation_config_model_name /workspace/models/Llama-2-7b-chat-hf \
+  --distillation \
+  --distillation_config_pure_bf16 \
+  --distillation_config_distil_factor 0.15 \
+  --dev_split_ratio 0.1 \
+  --dev_split_seed 4 \
+  --early_stopping_patience 4 \
+  --dev_gen_batch_size 2 \
+  --f 1 \
+  --seed 4
+```
+
+## Datasets
+
+QED has been uploaded to Google Drive: [https://drive.google.com/drive/folders/1ZE_wu0Ey2KpKrjq3NA0VgAvyhynOR6a4?usp=sharing](https://drive.google.com/drive/folders/1ZE_wu0Ey2KpKrjq3NA0VgAvyhynOR6a4?usp=sharing). You need to download it yourself — it is too large to push to git.
+
+Most dataset files are given in `SpanOT-KD/llm_distillation/datasets/hf/` and `SpanOT-KD/llm_distillation/datasets/hf/processed/`. Raw splits need to be converted to Arrow datasets (`transfer.py` in `llm_distillation/datasets/hf/` shows an example).
+
+To add the teacher's answer as the student's distillation label (the `qedllama` variant consumed by `qed.py`), generate teacher predictions with `benchmarkqedllama.py`/`benchmark.py`, save them to a JSON file, then run the corresponding `transfer.py` to merge them into a new Arrow dataset.
+
+## Student Checkpoints
+
+The distilled student checkpoints reported in the base MultiLevelOT paper can be downloaded here:
+[https://drive.google.com/drive/folders/1O6k6THm_PjqNybDixppXhad0Nyk-xIjB?usp=drive_link](https://drive.google.com/drive/folders/1O6k6THm_PjqNybDixppXhad0Nyk-xIjB?usp=drive_link) &
+[https://drive.google.com/drive/folders/1ZE_wu0Ey2KpKrjq3NA0VgAvyhynOR6a4?usp=sharing](https://drive.google.com/drive/folders/1ZE_wu0Ey2KpKrjq3NA0VgAvyhynOR6a4?usp=sharing)
 
 ## Environmental statement
 
-All these files use "{os.getenv('HOME')}"
+All these files use `{os.getenv('HOME')}`:
 
 llm_distillation/datasets/generator.py
 
@@ -143,11 +290,13 @@ llm_distillation/prompt/prompt.py
 
 llm_distillation/benchtestfairy.py
 
-Llm_distillation/benchmark/*
+llm_distillation/benchmark/*
 
-If you meet errors on you machine because of environmental errors, you may try to change them into direct path.
+If you hit environment errors on your machine, try changing these into direct paths.
 
 ## Citation
+
+This repository builds on the Multi-Level Optimal Transport distillation method. If you use this code, please cite the base method:
 
 ```
 @article{cui2024multi,
