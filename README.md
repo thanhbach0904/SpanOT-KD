@@ -2,6 +2,24 @@
 
 This repository extends **Multi-Level Optimal Transport for Universal Cross-Tokenizer Knowledge Distillation on Language Models** (Cui et al., AAAI 2025 oral) with **SpanOT-KD**, a span-selective distillation mechanism that reweights the HAD/SL/SD loss components by a per-span entropy-gap importance weight (see "Citation" below for the base method). When the SpanOT-KD flags are disabled, training is byte-for-byte identical to vanilla MultiLevelOT.
 
+## Setup
+
+`setup.sh` (repo root, one level above this file) is a one-shot bootstrap for a fresh Vast.ai instance. It performs everything in the next two sections automatically — teacher download, repo clone, and student downloads — so you only need those sections if you want to do a step by hand or understand what the script does.
+
+```bash
+HF_TOKEN=<your_hf_token> GITHUB_TOKEN=<your_github_pat> bash setup.sh
+```
+
+`HF_TOKEN` is required; `GITHUB_TOKEN` is optional (omit it to clone over plain HTTPS — you'll be prompted for credentials if the repo is private). The script:
+
+1. Sets `HOME=/workspace` and activates the venv at `/venv/main/bin/activate`.
+2. Installs `huggingface_hub` and runs `hf auth login --token "$HF_TOKEN"`.
+3. Downloads the teacher model (`meta-llama/Llama-2-7b-chat-hf`) into `$HOME/models/Llama-2-7b-chat-hf`.
+4. Installs a transient `optimum==1.17.0` / `transformers==4.48.0` pin (kept only for parity with the original bootstrap notes — it gets overridden in step 6, so it has no effect on the final environment).
+5. Clones the repo from `https://github.com/thanhbach0904/SpanOT-KD.git` into `$HOME/SpanOT-KD` (default branch, no checkout override).
+6. Installs the training-pinned dependencies: `transformers==4.40.2`, `datasets`, `peft`, `accelerate`, `evaluate`, `rouge_score`, `sentencepiece`, `protobuf`, `scipy`, `matplotlib`, `huggingface_hub`, `wandb`, `scikit-learn`, `bert_score`.
+7. Downloads the student models (`facebook/opt-350m`, `EleutherAI/pythia-410m`) into `$HOME/SpanOT-KD/EleutherAI/`.
+
 ## Download Pre-trained Teacher Model
 
 The teacher model used in this setup is Llama-2-7b-chat-hf. Download it from Hugging Face into `$HOME/models/`:
