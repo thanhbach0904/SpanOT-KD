@@ -52,14 +52,13 @@ echo "==> Transient optimum/transformers pin (will be overridden below)..."
 pip uninstall -y -q optimum transformers
 pip install -q optimum==1.17.0 transformers==4.48.0
 
-echo "==> Cloning $REPO_NAME (branch: $REPO_BRANCH) into $INSTALL_DIR ..."
+echo "==> Cloning $REPO_NAME into $INSTALL_DIR ..."
 if [ -n "${GITHUB_TOKEN:-}" ]; then
   git clone "https://${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${REPO_NAME}.git" "$INSTALL_DIR"
 else
   git clone "https://github.com/${GITHUB_USER}/${REPO_NAME}.git" "$INSTALL_DIR"
 fi
 cd "$INSTALL_DIR"
-git checkout "$REPO_BRANCH"
 
 echo "==> Installing Python dependencies (final, training-pinned versions)..."
 pip uninstall -y -q optimum transformers
@@ -99,7 +98,7 @@ PYEOF
 
 echo ""
 echo "==> Setup complete."
-echo "    Repo      : $INSTALL_DIR  (github.com/${GITHUB_USER}/${REPO_NAME}, branch ${REPO_BRANCH})"
+echo "    Repo      : $INSTALL_DIR  (github.com/${GITHUB_USER}/${REPO_NAME})"
 echo "    Models    : $INSTALL_DIR/EleutherAI/"
 echo "    Teacher   : $TEACHER_LOCAL_DIR"
 echo ""
