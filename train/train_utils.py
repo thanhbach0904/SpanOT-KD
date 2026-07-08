@@ -21,10 +21,12 @@ from models.distillation_model import DistillationLoss, preprocess_distillation_
 
 # llm_distillation/benchmark is a namespace package with no __init__.py and
 # its modules use bare imports (e.g. `import score`), so we add the
-# benchmark directory to sys.path before pulling in score.
+# benchmark directory to sys.path before pulling in score. Derived from
+# __file__ (not hardcoded to a repo folder name like "Multi-Level-OT")
+# so this works regardless of what the clone directory is named.
 import sys as _sys
-_BENCHMARK_DIR = os.path.join(os.getenv("HOME", ""),
-                              "Multi-Level-OT", "llm_distillation", "benchmark")
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_BENCHMARK_DIR = os.path.join(_REPO_ROOT, "llm_distillation", "benchmark")
 if _BENCHMARK_DIR not in _sys.path:
     _sys.path.append(_BENCHMARK_DIR)
 import score as benchmark_score

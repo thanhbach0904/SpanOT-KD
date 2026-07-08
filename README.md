@@ -156,7 +156,8 @@ CUDA_VISIBLE_DEVICES=0 python $HOME/SpanOT-KD/llm_distillation/benchmark/benchma
 ```bash
 # Train (SpanOT-KD enabled, seed 4; SPANOT_TRACE* env vars enable the
 # per-sample tracer described in change_logs.md, optional)
-SPANOT_TRACE=1 SPANOT_TRACE_STEP=0 SPANOT_TRACE_B=0 SPANOT_TRACE_SEED=4 CUDA_VISIBLE_DEVICES=0 python $HOME/SpanOT-KD/finetuning.py \
+SPANOT_TRACE=1 SPANOT_TRACE_STEP=0 SPANOT_TRACE_B=0 SPANOT_TRACE_SEED=4 
+CUDA_VISIBLE_DEVICES=0 python $HOME/SpanOT-KD/finetuning.py \
   --model_name $HOME/SpanOT-KD/EleutherAI/pythia-410m \
   --dataset.file $HOME/SpanOT-KD/llm_distillation/datasets/loader/qed.py \
   --lr 1e-6 \

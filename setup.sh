@@ -42,13 +42,15 @@ mkdir -p "$HOME/models"
 hf download "$TEACHER_MODEL" --local-dir "$HOME/models/meta-llama/Llama-2-7b-chat-hf"
 mv "$HOME/models/meta-llama/Llama-2-7b-chat-hf" "$TEACHER_LOCAL_DIR"
 
-# NOTE: this pin is intentionally transient. It matches config_steps.md's
-# post-download step, but the "Installing Python dependencies" block further
-# down re-pins transformers==4.40.2 (the version the SpanOT-KD/Multi-Level-OT
-# training code is actually written against), which overrides it. Effectively
-# a no-op for the final environment — kept here only for parity with
-# config_steps.md in case the teacher download step needs it.
-echo "==> Transient optimum/transformers pin (will be overridden below)..."
+# NOTE: this pin is intentionally transient for transformers — the
+# "Installing Python dependencies" block further down re-pins
+# transformers==4.40.2 (the version the SpanOT-KD/Multi-Level-OT training
+# code is actually written against), which overrides it. optimum==1.17.0
+# is NOT a no-op though: the final block used to uninstall optimum here and
+# never reinstall it, even though models/models_utils.py imports
+# `optimum.bettertransformer` unconditionally at module load. Re-pinned
+# below so the final environment actually has it.
+echo "==> Transient optimum/transformers pin (transformers pin overridden below, optimum pin kept)..."
 pip uninstall -y -q optimum transformers
 pip install -q optimum==1.17.0 transformers==4.48.0
 
@@ -60,12 +62,25 @@ else
 fi
 cd "$INSTALL_DIR"
 
+# The training code (llm_distillation/, train/, etc.) hardcodes
+# "$HOME/Multi-Level-OT/..." in ~20+ files (benchmark scripts, dataset
+# loaders, prompt.py) instead of deriving paths from the repo's actual
+# location. Since this repo is cloned as "$REPO_NAME" ($INSTALL_DIR), not
+# "Multi-Level-OT", every one of those hardcoded paths would 404. Symlink
+# so both names resolve to the same checkout, rather than rewriting every
+# call site.
+if [ "$INSTALL_DIR" != "$HOME/Multi-Level-OT" ]; then
+  echo "==> Symlinking $HOME/Multi-Level-OT -> $INSTALL_DIR (training code hardcodes this path)..."
+  ln -sfn "$INSTALL_DIR" "$HOME/Multi-Level-OT"
+fi
+
 echo "==> Installing Python dependencies (final, training-pinned versions)..."
 pip uninstall -y -q optimum transformers
 pip install -q \
   transformers==4.40.2 \
+  optimum==1.17.0 \
   datasets \
-  peft \
+  peft==0.10.0 \
   accelerate \
   evaluate \
   rouge_score \
