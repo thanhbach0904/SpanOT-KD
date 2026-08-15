@@ -22,6 +22,15 @@ def tokenize(item, tokenizer, encoder_decoder=False):
     elif tokenizer.name_or_path == f"{os.getenv('HOME')}/tiiuae/falcon-7b-instruct":
         shot = 3
         title = False
+    elif tokenizer.name_or_path == f"{os.getenv('HOME')}/models/Qwen-7B-Chat":
+        shot = 5
+        title = False
+    else:
+        # Any other chat/instruct teacher not explicitly listed above:
+        # previously shot/title were left undefined here, which crashed
+        # with UnboundLocalError as soon as is_chat=True below.
+        shot = 0
+        title = False
 
     if is_chat:
         prompt = create_chat_prompt(
@@ -142,6 +151,9 @@ def _build_generation_prompt(item, tokenizer):
         title = item['title_text']
     elif tokenizer.name_or_path == f"{os.getenv('HOME')}/tiiuae/falcon-7b-instruct":
         shot = 3
+        title = False
+    elif tokenizer.name_or_path == f"{os.getenv('HOME')}/models/Qwen-7B-Chat":
+        shot = 5
         title = False
     else:
         shot = 0

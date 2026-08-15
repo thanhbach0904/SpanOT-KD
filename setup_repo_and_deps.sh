@@ -60,14 +60,23 @@ fi
 
 echo ""
 echo "==> Installing Python dependencies (training-pinned versions)..."
-echo "    (This may take a few minutes...)"
+echo "    (This can take a while on some hosts — mostly PyPI download"
+echo "     throughput, not dependency resolution. Full log: /tmp/pip_install.log)"
 
 # NOTE: this approach re-pins transformers==4.40.2 (the version the SpanOT-KD/
 # Multi-Level-OT training code is actually written against). optimum==1.17.0 is
 # also required: models/models_utils.py imports `optimum.bettertransformer`
 # unconditionally at module load.
+#
+# Installed with -v (not -q) piped through tee: on a slow/flaky vast.ai host
+# a silent -q install can sit for 10+ minutes with zero output, indistinguishable
+# from a resolver deadlock or a stray torch reinstall. -v makes the download vs.
+# resolve phase visible live, and the log lets you grep after the fact, e.g.:
+#   grep -i "Collecting torch" /tmp/pip_install.log
+#   grep -ic "INFO: pip is looking at multiple versions" /tmp/pip_install.log
+# (set -o pipefail above ensures a pip failure still fails this script through the pipe.)
 pip uninstall -y -q optimum transformers 2>/dev/null || true
-pip install -q \
+pip install -v \
   transformers==4.40.2 \
   optimum==1.17.0 \
   datasets \
@@ -82,7 +91,7 @@ pip install -q \
   huggingface_hub \
   wandb \
   scikit-learn \
-  bert_score
+  bert_score 2>&1 | tee /tmp/pip_install.log
 
 echo ""
 echo "════════════════════════════════════════════════════════════════"

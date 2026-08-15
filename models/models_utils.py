@@ -49,12 +49,19 @@ def load_model(train_config, rank, fsdp_config=None):
                 torch_dtype=dtype,
             )
         elif "Qwen" in train_config.model_name:
+            # Qwen1's custom (trust_remote_code) modeling code picks its
+            # internal compute dtype from these config flags, not from
+            # torch_dtype/pure_bf16 like standard architectures. Previously
+            # this hardcoded fp32=True, which silently ignored
+            # --distillation_config_pure_bf16 and forced ~2x the memory
+            # (fp32 vs bf16) for a 7B teacher.
             return AutoModelForCausalLM.from_pretrained(
                 train_config.model_name,
                 load_in_8bit=True if train_config.quantization else False,
                 device_map="auto" if train_config.quantization else None,
                 use_cache=use_cache,
-                fp32=True,
+                bf16=bf16,
+                fp32=not bf16,
                 trust_remote_code=True,
             )
         else:
