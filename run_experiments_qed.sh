@@ -47,7 +47,18 @@ esac
 REPO_PATH="$HOME/SpanOT-KD"
 STUDENT_PATH="$REPO_PATH/EleutherAI/$STUDENT_MODEL"
 DATASET_FILE="$REPO_PATH/llm_distillation/datasets/loader/qed.py"
-OUTPUT_DIR="$REPO_PATH/output_qed_${STUDENT_MODEL%%-*}"
+# Previously OUTPUT_DIR/eval paths only encoded the student name+seed, so
+# every teacher x {vanilla,SpanOT-KD} combination at the same student+seed
+# silently overwrote each other's checkpoints AND eval predictions. Encode
+# teacher basename + method so runs are distinguishable on disk.
+TEACHER_TAG="$(basename "$TEACHER_MODEL_PATH")"
+if [ "$SPAN_KD_ENABLED" = "true" ]; then
+  METHOD_TAG="spanotkd"
+else
+  METHOD_TAG="vanilla"
+fi
+RUN_TAG="${STUDENT_MODEL%%-*}_${TEACHER_TAG}_${METHOD_TAG}_seed${SEED}"
+OUTPUT_DIR="$REPO_PATH/output_qed_${RUN_TAG}"
 
 echo "════════════════════════════════════════════════════════════════"
 echo "QED Dataset Experiments"
@@ -68,8 +79,9 @@ TRAIN_CMD="python $REPO_PATH/finetuning.py \
   --dataset.file $DATASET_FILE \
   --lr 1e-6 \
   --num_epochs 5 \
-  --batch_size_training 2 \
-  --val_batch_size 2 \
+  --batch_size_training 1 \
+  --gradient_accumulation_steps 2 \
+  --val_batch_size 1 \
   --output_dir $OUTPUT_DIR \
   --distillation_config_model_name $TEACHER_MODEL_PATH \
   --distillation \
@@ -78,7 +90,7 @@ TRAIN_CMD="python $REPO_PATH/finetuning.py \
   --dev_split_ratio 0.1 \
   --dev_split_seed $SEED \
   --early_stopping_patience 3 \
-  --dev_gen_batch_size 2 \
+  --dev_gen_batch_size 1 \
   --f 1 \
   --seed $SEED"
 
@@ -91,7 +103,7 @@ if [ "$SPAN_KD_ENABLED" = "true" ]; then
 fi
 
 echo "[1/3] Training..."
-CUDA_VISIBLE_DEVICES=0 eval "$TRAIN_CMD"
+CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True eval "$TRAIN_CMD"
 
 echo ""
 echo "[2/3] Evaluating (best_dev_f1 checkpoint)..."
@@ -107,7 +119,7 @@ EVAL_CMD_F1="python $REPO_PATH/llm_distillation/benchmark/benchmarkqedllama.py \
   --task qa \
   --bfloat \
   --save_predictions \
-  --output_path $REPO_PATH/eval_results/qed_${STUDENT_MODEL%%-*}_teacher_seed${SEED}/"
+  --output_path $REPO_PATH/eval_results/qed_${RUN_TAG}/"
 
 CUDA_VISIBLE_DEVICES=0 eval "$EVAL_CMD_F1"
 
@@ -125,7 +137,7 @@ EVAL_CMD_LOSS="python $REPO_PATH/llm_distillation/benchmark/benchmarkqedllama.py
   --task qa \
   --bfloat \
   --save_predictions \
-  --output_path $REPO_PATH/eval_results/qed_${STUDENT_MODEL%%-*}_teacher_seed${SEED}_loss/"
+  --output_path $REPO_PATH/eval_results/qed_${RUN_TAG}_loss/"
 
 CUDA_VISIBLE_DEVICES=0 eval "$EVAL_CMD_LOSS"
 
@@ -133,6 +145,6 @@ echo ""
 echo "════════════════════════════════════════════════════════════════"
 echo "QED Experiments Complete"
 echo "Results saved to:"
-echo "  - $REPO_PATH/eval_results/qed_${STUDENT_MODEL%%-*}_teacher_seed${SEED}/"
-echo "  - $REPO_PATH/eval_results/qed_${STUDENT_MODEL%%-*}_teacher_seed${SEED}_loss/"
+echo "  - $REPO_PATH/eval_results/qed_${RUN_TAG}/"
+echo "  - $REPO_PATH/eval_results/qed_${RUN_TAG}_loss/"
 echo "════════════════════════════════════════════════════════════════"

@@ -33,6 +33,7 @@ def parse_args():
     parser.add_argument("--num_epochs", type=int, default=5, help="Number of epochs")
     parser.add_argument("--batch_size_training", type=int, default=4, help="Training batch size")
     parser.add_argument("--val_batch_size", type=int, default=4, help="Validation batch size")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
     parser.add_argument("--output_dir", type=str, required=True, help="Output directory path")
     parser.add_argument("--distillation_config_model_name", type=str, help="Model name for distillation")
     parser.add_argument("--distillation", action="store_true", help="Enable distillation")

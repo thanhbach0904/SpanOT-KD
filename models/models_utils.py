@@ -7,7 +7,6 @@ from policies import apply_fsdp_checkpointing
 from models.fsdp import fsdp_auto_wrap_policy
 from configs import fsdp_config as FSDP_CONFIG
 from models.distillation_model import DistillationModel
-from optimum.bettertransformer import BetterTransformer
 from transformers import AutoModelForCausalLM, MT5ForConditionalGeneration, AutoTokenizer
 from configs.configs_utils import generate_peft_config, update_config
 from peft import get_peft_model, prepare_model_for_kbit_training
@@ -33,6 +32,18 @@ def load_tokenizer(name, encoder_decoder):
         tokenizer.eos_token = "<|endoftext|>"  # 这里可以根据您的模型需要设置适当的结束符
     if not encoder_decoder:
         tokenizer.pad_token_id = tokenizer.eos_token_id
+    if tokenizer.chat_template is None and getattr(tokenizer, "im_start_id", None) is not None:
+        # Qwen1 (e.g. Qwen-7B-Chat, generation_config.json: chat_format="chatml")
+        # predates transformers' chat_template standard, so apply_chat_template()
+        # raises ValueError without this. Template reproduces
+        # qwen_generation_utils.py::make_context() (verified against that file,
+        # not guessed): each message -> "<|im_start|>{role}\n{content}<|im_end|>\n".
+        tokenizer.chat_template = (
+            "{% for message in messages %}"
+            "{{ '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n' }}"
+            "{% endfor %}"
+            "{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
+        )
     return tokenizer
 
 def load_model(train_config, rank, fsdp_config=None):
@@ -95,6 +106,12 @@ def load_model(train_config, rank, fsdp_config=None):
             using of Flash Attention or Xformer memory-efficient kernels
             based on the hardware being used. This would speed up fine-tuning.
             """
+            # Imported lazily: optimum removed the bettertransformer submodule
+            # in newer releases (BetterTransformer is deprecated upstream in
+            # favor of transformers' native attn_implementation="sdpa"), so
+            # importing it unconditionally at module load broke every run
+            # even when this flag was off.
+            from optimum.bettertransformer import BetterTransformer
             model = BetterTransformer.transform(model)
             
     print_model_size(model, train_config, rank)
