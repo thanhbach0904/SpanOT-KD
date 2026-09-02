@@ -325,12 +325,17 @@ class DistillationLoss(nn.Module):
         need_tokenisers = self.debug or self.span_kd_enabled
         if need_tokenisers and tokenizer_student is not None:
             self.student_tokenizer = AutoTokenizer.from_pretrained(
-                tokenizer_student, trust_remote_code=True
+                tokenizer_student, trust_remote_code=True, use_fast=True
             )
         if need_tokenisers and tokenizer_teacher is not None:
             self.teacher_tokenizer = AutoTokenizer.from_pretrained(
-                tokenizer_teacher, trust_remote_code=True
+                tokenizer_teacher, trust_remote_code=True, use_fast=True
             )
+        # NOTE: a tokenizer with no fast backend (e.g. Qwen-7B-Chat's
+        # QWenTokenizer) is not an error here — train.span_ot falls back to
+        # a decode-diff offset reconstruction (_reconstruct_offset_map_slow)
+        # and emits a one-time warnings.warn the first time it's used, so
+        # the degraded-precision path is visible in logs rather than silent.
 
         self.store_teacher_logits = True
         self.batch_limit = batch_limit  # 设定每100个样本保存一次

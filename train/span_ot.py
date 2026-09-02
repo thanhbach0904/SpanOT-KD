@@ -72,6 +72,7 @@ MultiLevelOT applies before this code is invoked.
 from __future__ import annotations
 
 import math
+import warnings
 from typing import List, Optional, Tuple
 
 import torch
@@ -80,6 +81,10 @@ from train.span_match import find_parent_token
 
 # Fires once per process to show how parent-span alignment works.
 _SPAN_ALIGN_DEBUG_PRINTED: bool = False
+
+# Fires once per process, per tokenizer name, to disclose that offsets are
+# being reconstructed rather than read exactly (see _reconstruct_offset_map_slow).
+_SLOW_OFFSET_FALLBACK_WARNED: set = set()
 
 
 def _per_token_entropy(probs: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
@@ -99,6 +104,53 @@ def _per_token_entropy(probs: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
     return -(probs * safe.log()).sum(dim=-1)
 
 
+def _reconstruct_offset_map_slow(
+    answer_text: str,
+    tokenizer,
+) -> List[Tuple[int, int]]:
+    """Reconstruct per-token character offsets for a tokenizer with no Rust
+    fast-tokenizer backend (e.g. Qwen-7B-Chat's ``QWenTokenizer``), which
+    cannot produce ``offset_mapping`` at all (``NotImplementedError``).
+
+    Method: encode ``answer_text`` to ids, then decode strictly-growing id
+    prefixes (``ids[:1]``, ``ids[:2]``, ...) and take each token's span as
+    the character range added by that prefix. This is exact for the common
+    case (a byte-level BPE tokenizer whose full decode reproduces the input
+    verbatim) because decode is a pure, order-preserving function of the ids
+    seen so far — no lookahead — so a longer prefix's decode is the true
+    prefix of the final string.
+
+    It can go wrong when a token boundary falls inside a multi-byte UTF-8
+    character: the shorter prefix decodes that dangling byte as a
+    replacement character (``�``), which can make an intermediate
+    prefix *longer* than the one after it once the character completes. We
+    guard the only failure mode that actually matters (a corrupted span
+    silently entering training): first, decoding the *whole* id sequence
+    must equal ``answer_text`` exactly, or we bail out to ``[]`` (same
+    "no usable offset map" contract as the fast path) rather than trust
+    partial reconstruction. Second, if an intermediate prefix ever shrinks
+    relative to the previous one (the replacement-character case above), we
+    clamp that token to a degenerate zero-width span instead of emitting a
+    negative-length range — the caller already filters zero-width spans, so
+    this token is simply excluded from span weighting rather than
+    corrupting it.
+    """
+    ids = tokenizer.encode(answer_text, add_special_tokens=False)
+    if not ids:
+        return []
+    full = tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+    if full != answer_text:
+        return []
+    offsets: List[Tuple[int, int]] = []
+    prev_len = 0
+    for i in range(len(ids)):
+        prefix = tokenizer.decode(ids[: i + 1], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+        cur_len = max(len(prefix), prev_len)
+        offsets.append((prev_len, cur_len))
+        prev_len = cur_len
+    return offsets
+
+
 def _safe_offset_map(
     answer_text: str,
     tokenizer,
@@ -107,11 +159,25 @@ def _safe_offset_map(
 
     Special-token offsets ``(0, 0)`` are filtered out — they carry no
     character coverage and would otherwise confuse the parent-span builder.
-    Returns ``[]`` when the tokenizer cannot produce offsets (slow tokenizer
-    fallback) so the caller can short-circuit to all-ones weights.
+    Fast tokenizers use HF's exact ``offset_mapping``; tokenizers with no
+    fast backend (e.g. Qwen-7B-Chat) fall back to
+    :func:`_reconstruct_offset_map_slow`. Returns ``[]`` when neither path
+    can produce offsets, so the caller short-circuits to all-ones weights.
     """
     if not answer_text or not answer_text.strip():
         return []
+    if not getattr(tokenizer, "is_fast", False):
+        name = getattr(tokenizer, "name_or_path", repr(tokenizer))
+        if name not in _SLOW_OFFSET_FALLBACK_WARNED:
+            _SLOW_OFFSET_FALLBACK_WARNED.add(name)
+            warnings.warn(
+                f"SpanOT-KD: tokenizer '{name}' has no fast backend; using "
+                f"reconstructed (decode-diff) offsets instead of exact "
+                f"offset_mapping. Samples whose full decode doesn't exactly "
+                f"round-trip fall back to all-ones weights for that sample.",
+                stacklevel=2,
+            )
+        return _reconstruct_offset_map_slow(answer_text, tokenizer)
     try:
         enc = tokenizer(
             answer_text,
