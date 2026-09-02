@@ -63,7 +63,12 @@ if __name__ == "__main__":
     parser.add_argument("--seq2seq", action="store_true", help="For encoder-decoder model")
     args = parser.parse_args()
 
-    if 'chat' in args.model_id.lower() or "instruct" in args.model_id.lower().split('/n')[:-2]:
+    # Check the tokenizer source, not args.model_id: for a distilled student
+    # checkpoint, model_id is an arbitrary output directory name (which now
+    # embeds the *teacher's* name, e.g. "..._Qwen-7B-Chat_...") — checking it
+    # for "chat"/"instruct" wrongly flags base-LM students as chat models.
+    _tokenizer_source = args.model_tokenizer if args.model_tokenizer else args.model_id
+    if 'chat' in _tokenizer_source.lower() or "instruct" in _tokenizer_source.lower():
         from prompt.prompt import create_chat_prompt as create_prompt
         is_chat = True
     else :
