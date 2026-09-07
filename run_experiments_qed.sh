@@ -79,8 +79,8 @@ TRAIN_CMD="python $REPO_PATH/finetuning.py \
   --dataset.file $DATASET_FILE \
   --lr 1e-6 \
   --num_epochs 5 \
-  --batch_size_training 1 \
-  --gradient_accumulation_steps 2 \
+  --batch_size_training 2 \
+  --gradient_accumulation_steps 1 \
   --val_batch_size 1 \
   --output_dir $OUTPUT_DIR \
   --distillation_config_model_name $TEACHER_MODEL_PATH \
