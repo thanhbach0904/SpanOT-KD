@@ -58,9 +58,106 @@ def tokenize(item, tokenizer):
     return dict(combined_tokens, attention_mask=[1]*len(combined_tokens["input_ids"]))
 
 
+FAIRYTALEQA_DISK_PATH = f"{os.getenv('HOME')}/Multi-Level-OT/llm_distillation/datasets/hf/uld_loss_Llama-2-7b-chat-hf-FairytaleQA/fairytaleQA"
+
+
+def _load_raw_train_dev(dataset_config):
+    """Load the on-disk train split and carve a seeded dev slice out of it.
+
+    Mirrors qed.py's contract (see configs/datasets.py docstring): the
+    on-disk 'train' is split 90/10 (seeded) into train/dev, and the on-disk
+    'validation' split is the held-out final test set — never touched here.
+    Returns (raw_train, raw_dev), both RAW (not tokenized).
+    """
+    full_train = load_from_disk(FAIRYTALEQA_DISK_PATH)["train"]
+    splits = full_train.train_test_split(
+        test_size=dataset_config.dev_split_ratio,
+        seed=dataset_config.dev_split_seed,
+        shuffle=True,
+    )
+    return splits["train"], splits["test"]
+
+
 def get_split(dataset_config, tokenizer, split):
-    dataset = load_from_disk(f"{os.getenv('HOME')}/Multi-Level-OT/llm_distillation/datasets/hf/uld_loss_Llama-2-7b-chat-hf-FairytaleQA/fairytaleQA")
-    dataset = dataset[split]
-    if dataset_config.training_size < 1: dataset = dataset.select(range(int(len(dataset)*dataset_config.training_size)))
+    """Return a tokenized split for the training loop.
+
+    split:
+      - "train" : 90% of on-disk train (after seeded carve-out)
+      - "dev"   : 10% of on-disk train (seeded carve-out — used for dev loss)
+      - "validation" : REJECTED. The on-disk validation set is the held-out
+        test set and must never be loaded by the training pipeline.
+    """
+    if split == "validation":
+        raise RuntimeError(
+            "[fairytaleQA loader] split='validation' is the held-out test set "
+            "and must not be loaded from the training pipeline. "
+            "Use split='dev' for in-training evaluation."
+        )
+    if split not in ("train", "dev"):
+        raise ValueError(f"[fairytaleQA loader] unknown split '{split}'")
+
+    raw_train, raw_dev = _load_raw_train_dev(dataset_config)
+    dataset = raw_train if split == "train" else raw_dev
+    print(f"[fairytaleQA loader] split='{split}' size={len(dataset)} "
+          f"(ratio={dataset_config.dev_split_ratio}, seed={dataset_config.dev_split_seed})")
+
+    # training_size truncation only applies to train — dev is a fixed reference.
+    if split == "train" and dataset_config.training_size < 1:
+        dataset = dataset.select(range(int(len(dataset) * dataset_config.training_size)))
+
     dataset = dataset.map(lambda item: tokenize(item, tokenizer), remove_columns=list(dataset.features))
+    return dataset
+
+
+def get_dev_for_generation(dataset_config, tokenizer):
+    """Return the dev split prepared for greedy generation.
+
+    The returned dataset has left-padded input_ids/attention_mask and a
+    QED-shaped 'original_nq_answers' column ([{'string': answer}]) so
+    data_utils.get_dev_gen_dataloader (written against QED's schema) can
+    pull the gold answer out the same way for every dataset.
+    """
+    _, raw_dev = _load_raw_train_dev(dataset_config)
+
+    prev_padding_side = tokenizer.padding_side
+    tokenizer.padding_side = 'left'
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    is_chat = 'chat' in tokenizer.name_or_path.lower() or "instruct" in tokenizer.name_or_path.lower()
+    task = "qa_generative"
+    if tokenizer.name_or_path == f"{os.getenv('HOME')}/models/Llama-2-7b-chat-hf":
+        shot = 2
+    elif tokenizer.name_or_path == f"{os.getenv('HOME')}/models/Mistral-7B-Instruct-v0.3":
+        shot = 4
+    elif tokenizer.name_or_path == f"{os.getenv('HOME')}/tiiuae/falcon-7b-instruct":
+        shot = 2
+    else:
+        shot = 0
+
+    def _add_prompt(item):
+        if is_chat:
+            item['prompt'] = create_chat_prompt(
+                task, shot,
+                context=item['context'],
+                question=item['question'],
+                sys_user=True if f"{os.getenv('HOME')}/models/Mistral-7B-Instruct-v0.3" in tokenizer.name_or_path else False,
+                chat_template=tokenizer.apply_chat_template,
+            )
+        else:
+            item['prompt'] = create_prompt(
+                task, 0,
+                context=item['context'],
+                question=item['question'],
+            )
+        item['original_nq_answers'] = [{'string': item['answers_generated']}]
+        return item
+
+    def _tok(items):
+        return tokenizer(items['prompt'], padding='longest')
+
+    dataset = raw_dev.map(_add_prompt)
+    dataset = dataset.map(_tok, batched=True, batch_size=64)
+
+    tokenizer.padding_side = prev_padding_side
     return dataset

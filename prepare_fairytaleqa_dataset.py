@@ -92,7 +92,7 @@ def _load_sections(story_name: str) -> dict[str, str]:
                 next((c for c in fields if "id" in c.lower()), fields[0] if fields else None),
             )
             text_col = next(
-                (c for c in fields if c.lower() in ("text", "content", "section", "passage")),
+                (c for c in fields if c != id_col and c.lower() in ("text", "content", "section", "passage")),
                 next((c for c in fields if c != id_col), None),
             )
             if id_col is None or text_col is None:

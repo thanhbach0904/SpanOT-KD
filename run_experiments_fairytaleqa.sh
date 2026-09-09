@@ -98,8 +98,9 @@ echo "[2/3] Evaluating (best_dev_f1 checkpoint)..."
 EVAL_CMD_F1="python $REPO_PATH/llm_distillation/benchmark/benchmarkfairytaleQAbasellama.py \
   --model_id $OUTPUT_DIR/best_dev_f1 \
   --model_tokenizer $STUDENT_PATH \
-  --dataset_id $REPO_PATH/llm_distillation/datasets/processed/fairytaleqa \
+  --dataset_id $REPO_PATH/llm_distillation/datasets/hf/uld_loss_Llama-2-7b-chat-hf-FairytaleQA/fairytaleQA \
   --split_name validation \
+  --mapping $REPO_PATH/llm_distillation/benchmark/mapping/fairytaleqa_uld_loss.json \
   --batch_size 4 \
   --num_workers 2 \
   --context_length 1024 \
@@ -116,8 +117,9 @@ echo "[3/3] Evaluating (best_dev_loss checkpoint)..."
 EVAL_CMD_LOSS="python $REPO_PATH/llm_distillation/benchmark/benchmarkfairytaleQAbasellama.py \
   --model_id $OUTPUT_DIR/best_dev_loss \
   --model_tokenizer $STUDENT_PATH \
-  --dataset_id $REPO_PATH/llm_distillation/datasets/processed/fairytaleqa \
+  --dataset_id $REPO_PATH/llm_distillation/datasets/hf/uld_loss_Llama-2-7b-chat-hf-FairytaleQA/fairytaleQA \
   --split_name validation \
+  --mapping $REPO_PATH/llm_distillation/benchmark/mapping/fairytaleqa_uld_loss.json \
   --batch_size 4 \
   --num_workers 2 \
   --context_length 1024 \
