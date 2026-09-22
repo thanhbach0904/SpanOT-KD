@@ -33,18 +33,22 @@ import score as benchmark_score
 
 
 def _compute_dev_f1(student_model, dev_gen_dataloader, dev_gen_answers, tokenizer,
-                    max_new_tokens, device, rank):
+                    max_new_tokens, device, rank, also_score_rouge_l=False):
     """Greedy generation on dev + token-overlap F1 matching the benchmark driver.
 
-    Returns the average F1 (float). Returns None on non-zero ranks; only
-    rank 0 holds the prediction strings (cheap operation, no DDP gather).
+    Returns the average F1 (float). If `also_score_rouge_l` is set, also
+    scores ROUGE-L (`benchmark_score.rouge`, same scorer used at test time by
+    the fairytaleQA benchmark driver) on the same generations and returns
+    (f1, rouge_l) instead — this avoids a second, redundant generation pass.
+    Returns None (or (None, None)) on non-zero ranks; only rank 0 holds the
+    prediction strings (cheap operation, no DDP gather).
     """
     if rank != 0:
-        # F1 is computed on rank 0 only — predictions are CPU strings and the
-        # operation is cheap relative to training. Other ranks just wait.
+        # F1/ROUGE-L are computed on rank 0 only — predictions are CPU strings
+        # and the operation is cheap relative to training. Other ranks wait.
         if dist.is_initialized():
             dist.barrier()
-        return None
+        return (None, None) if also_score_rouge_l else None
 
     student_model.eval()
     predictions = []
@@ -73,9 +77,16 @@ def _compute_dev_f1(student_model, dev_gen_dataloader, dev_gen_answers, tokenize
         print(f"[dev F1] WARNING: {n_pred} predictions vs {n_ans} gold answers — truncating to min.")
     n = min(n_pred, n_ans)
     res = benchmark_score.f1_score(predictions[:n], dev_gen_answers[:n])
+    f1 = float(res['f1'])
+
+    rouge_l = None
+    if also_score_rouge_l:
+        rouge_res = benchmark_score.rouge(predictions[:n], dev_gen_answers[:n])
+        rouge_l = float(rouge_res['rougeL'])
+
     if dist.is_initialized():
         dist.barrier()
-    return float(res['f1'])
+    return (f1, rouge_l) if also_score_rouge_l else f1
 
 
 
@@ -304,11 +315,17 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
     steps_per_epoch = len(train_dataloader)
     best_dev_loss = float("inf")
     best_dev_f1 = -1.0
+    best_dev_rouge_l = -1.0
+    # fairytaleQA selects its best checkpoint by dev ROUGE-L instead of dev
+    # F1 (dataset_config.file is the loader path, e.g. .../fairytaleQA.py).
+    # Other datasets (QED, DialogSum) are unaffected and keep using dev F1.
+    select_by_rouge_l = "fairytaleqa" in os.path.basename(dataset_config.file).lower()
     epochs_since_dev_loss_improved = 0
     early_stop_triggered = False
     val_loss = []
     val_ppl = []
     dev_f1_history = []
+    dev_rouge_l_history = []
 
     # Persist the dev-split metadata so two runs with the same --seed can be
     # audited for determinism after the fact.
@@ -573,8 +590,10 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                     wandb_log["dev/distil_loss"] = float(eval_dist_loss)
                 wandb.log(wandb_log)
 
-            # --- Dev F1 (generative; matches the benchmark driver). ---
+            # --- Dev F1 (and, for fairytaleQA, dev ROUGE-L) — generative,
+            # matches the benchmark driver. ---
             dev_f1 = None
+            dev_rouge_l = None
             if dev_gen_dataloader is not None and student_tokenizer is not None:
                 # Generation runs on the student. Determine its device.
                 if train_config.enable_fsdp or distil_config.enable_fsdp:
@@ -582,11 +601,18 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                 else:
                     gen_device = torch.device("cuda:0")
                 student_for_gen = model.student if train_config.distillation else model
-                dev_f1 = _compute_dev_f1(
-                    student_for_gen, dev_gen_dataloader, dev_gen_answers,
-                    student_tokenizer, train_config.dev_eval_max_new_tokens,
-                    gen_device, rank,
-                )
+                if select_by_rouge_l:
+                    dev_f1, dev_rouge_l = _compute_dev_f1(
+                        student_for_gen, dev_gen_dataloader, dev_gen_answers,
+                        student_tokenizer, train_config.dev_eval_max_new_tokens,
+                        gen_device, rank, also_score_rouge_l=True,
+                    )
+                else:
+                    dev_f1 = _compute_dev_f1(
+                        student_for_gen, dev_gen_dataloader, dev_gen_answers,
+                        student_tokenizer, train_config.dev_eval_max_new_tokens,
+                        gen_device, rank,
+                    )
                 # Restore train mode regardless of who ran generation.
                 if train_config.distillation:
                     model.student.train()
@@ -596,8 +622,13 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                     print(f"[dev] epoch {epoch+1}: dev_f1={dev_f1:.4f}")
                     dev_f1_history.append(dev_f1)
                     wandb.log({"dev/f1": dev_f1, "epoch": epoch + 1})
+                if rank == 0 and dev_rouge_l is not None:
+                    print(f"[dev] epoch {epoch+1}: dev_rouge_l={dev_rouge_l:.4f}")
+                    dev_rouge_l_history.append(dev_rouge_l)
+                    wandb.log({"dev/rouge_l": dev_rouge_l, "epoch": epoch + 1})
 
-            # --- Best-checkpoint saves: both best_dev_loss and best_dev_f1. ---
+            # --- Best-checkpoint saves: best_dev_loss, plus the generative
+            # selection metric — best_dev_f1, or for fairytaleQA best_dev_rouge_l. ---
             if dev_loss_scalar < best_dev_loss:
                 best_dev_loss = dev_loss_scalar
                 epochs_since_dev_loss_improved = 0
@@ -616,18 +647,25 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                 if rank == 0:
                     print(f"[dev] no dev_loss improvement ({epochs_since_dev_loss_improved}/{train_config.early_stopping_patience})")
 
-            if dev_f1 is not None and dev_f1 > best_dev_f1:
-                best_dev_f1 = dev_f1
+            selection_value = dev_rouge_l if select_by_rouge_l else dev_f1
+            selection_best_so_far = best_dev_rouge_l if select_by_rouge_l else best_dev_f1
+            if selection_value is not None and selection_value > selection_best_so_far:
+                if select_by_rouge_l:
+                    best_dev_rouge_l = selection_value
+                else:
+                    best_dev_f1 = selection_value
+                subdir_name = "best_dev_rouge_l" if select_by_rouge_l else "best_dev_f1"
+                metric_label = "dev_rouge_l" if select_by_rouge_l else "dev_f1"
                 if train_config.save_model:
                     save_model(
                         model if not train_config.distillation else model.student,
                         optimizer, (steps_per_epoch * (epoch + 1)) - 1,
                         train_config, distil_config, fsdp_config, rank,
-                        subdir_name="best_dev_f1",
+                        subdir_name=subdir_name,
                     )
                     if rank == 0:
-                        print(f"[dev] new best dev_f1={best_dev_f1:.4f} → saved best_dev_f1/")
-                        wandb.log({"dev/best_f1": best_dev_f1, "epoch": epoch + 1})
+                        print(f"[dev] new best {metric_label}={selection_value:.4f} → saved {subdir_name}/")
+                        wandb.log({f"dev/best_{metric_label}": selection_value, "epoch": epoch + 1})
 
             clear_gpu_cache(rank)
 
@@ -656,6 +694,9 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
         if best_dev_f1 > -1.0:
             results["best_dev_f1"] = best_dev_f1
             results["dev_f1_history"] = dev_f1_history
+        if best_dev_rouge_l > -1.0:
+            results["best_dev_rouge_l"] = best_dev_rouge_l
+            results["dev_rouge_l_history"] = dev_rouge_l_history
         results["early_stop_triggered"] = early_stop_triggered
 
     if train_config.enable_fsdp and not train_config.use_peft:

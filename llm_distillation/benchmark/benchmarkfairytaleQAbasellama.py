@@ -180,6 +180,7 @@ if __name__ == "__main__":
 
     titled_folder = "titled" if has_title else "untitled"
     output = args.output_path if args.output_path else f"{os.getenv('HOME')}/Multi-Level-OT/llm_distillation/benchmark/results/{args.model_id.split('/')[-1]}/{args.dataset_id.split('/')[-1]}/{titled_folder}"
+    os.makedirs(output, exist_ok=True)
     with open(f"{output}/{args.number_few_shot}shots.json", 'w') as json_file:
         json.dump(
             {

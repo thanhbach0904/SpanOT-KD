@@ -217,8 +217,15 @@ def _execute_training_run(args, train_config, fsdp_config, distil_config, data_c
 def _run_sweep(args, train_config, fsdp_config, distil_config, data_config,
                rank, local_rank, base_output_dir):
     """Train one student per value in SPAN_TOP_R_SWEEP_VALUES, then pick the
-    best by dev F1 and the best by dev CE loss (these can differ) and copy
+    best by dev CE loss and the best by the generative selection metric
+    (dev F1, or for fairytaleQA dev ROUGE-L) — these can differ — and copy
     both winning checkpoints to canonical paths under `base_output_dir`."""
+    # Mirrors the dataset gate in train.train_utils.train(): fairytaleQA
+    # selects checkpoints by dev ROUGE-L, other datasets keep dev F1.
+    select_by_rouge_l = "fairytaleqa" in os.path.basename(data_config.file).lower()
+    gen_metric_key = "best_dev_rouge_l" if select_by_rouge_l else "best_dev_f1"
+    gen_metric_label = "dev_rouge_l" if select_by_rouge_l else "dev_f1"
+
     if not train_config.distillation:
         raise ValueError(
             "[sweep] --distillation_config_span_top_r_sweep requires --distillation.")
@@ -248,9 +255,9 @@ def _run_sweep(args, train_config, fsdp_config, distil_config, data_config,
         sweep_results[r] = results
         if rank == 0:
             best_dev_loss = results.get("best_dev_loss", float("nan"))
-            best_dev_f1 = results.get("best_dev_f1", None)
+            best_dev_gen = results.get(gen_metric_key, None)
             print(f"\n[sweep] <<< Finished run for span_top_r = {r}  →  "
-                  f"best_dev_loss={best_dev_loss}, best_dev_f1={best_dev_f1}\n", flush=True)
+                  f"best_dev_loss={best_dev_loss}, {gen_metric_label}={best_dev_gen}\n", flush=True)
 
     # Winner selection is rank-0 only (it's pure file I/O on cached metrics).
     if rank == 0:
@@ -270,30 +277,30 @@ def _run_sweep(args, train_config, fsdp_config, distil_config, data_config,
             return picker(cand, key=lambda x: x[1])
 
         winner_r_loss, best_dev_loss = _best("best_dev_loss", "min")
-        winner_r_f1, best_dev_f1 = _best("best_dev_f1", "max")
+        winner_r_gen, best_dev_gen = _best(gen_metric_key, "max")
 
         # Build a human-readable / machine-readable summary.
         per_run = {}
         for r in SPAN_TOP_R_SWEEP_VALUES:
             res = sweep_results.get(r, {}) or {}
             bdl = res.get("best_dev_loss", None)
-            bdf = res.get("best_dev_f1", None)
+            bdg = res.get(gen_metric_key, None)
             per_run[f"{r:.1f}"] = {
                 "run_dir": os.path.join(base_output_dir, f"r_{r:.1f}"),
                 "best_dev_loss": float(bdl) if bdl is not None else None,
-                "best_dev_f1":   float(bdf) if bdf is not None else None,
+                gen_metric_key:  float(bdg) if bdg is not None else None,
             }
 
         winner_dev_loss_src = (
             os.path.join(base_output_dir, f"r_{winner_r_loss:.1f}", "best_dev_loss")
             if winner_r_loss is not None else None
         )
-        winner_dev_f1_src = (
-            os.path.join(base_output_dir, f"r_{winner_r_f1:.1f}", "best_dev_f1")
-            if winner_r_f1 is not None else None
+        winner_dev_gen_src = (
+            os.path.join(base_output_dir, f"r_{winner_r_gen:.1f}", gen_metric_key)
+            if winner_r_gen is not None else None
         )
         winner_dev_loss_dst = os.path.join(base_output_dir, "best_dev_loss")
-        winner_dev_f1_dst = os.path.join(base_output_dir, "best_dev_f1")
+        winner_dev_gen_dst = os.path.join(base_output_dir, gen_metric_key)
 
         summary = {
             "sweep_r_values": SPAN_TOP_R_SWEEP_VALUES,
@@ -305,11 +312,11 @@ def _run_sweep(args, train_config, fsdp_config, distil_config, data_config,
                 "src": winner_dev_loss_src,
                 "dst": winner_dev_loss_dst,
             },
-            "winner_dev_f1": {
-                "r": winner_r_f1,
-                "best_dev_f1": best_dev_f1,
-                "src": winner_dev_f1_src,
-                "dst": winner_dev_f1_dst,
+            f"winner_{gen_metric_label}": {
+                "r": winner_r_gen,
+                gen_metric_key: best_dev_gen,
+                "src": winner_dev_gen_src,
+                "dst": winner_dev_gen_dst,
             },
         }
 
@@ -317,12 +324,12 @@ def _run_sweep(args, train_config, fsdp_config, distil_config, data_config,
         for r in SPAN_TOP_R_SWEEP_VALUES:
             entry = per_run[f"{r:.1f}"]
             print(f"  r={r}: best_dev_loss={entry['best_dev_loss']}, "
-                  f"best_dev_f1={entry['best_dev_f1']}", flush=True)
+                  f"{gen_metric_label}={entry[gen_metric_key]}", flush=True)
         print(f"  winner dev_loss: r={winner_r_loss} (dev_loss={best_dev_loss})", flush=True)
-        print(f"  winner dev_f1  : r={winner_r_f1} (dev_f1={best_dev_f1})", flush=True)
+        print(f"  winner {gen_metric_label}  : r={winner_r_gen} ({gen_metric_label}={best_dev_gen})", flush=True)
 
         # Copy winners to canonical paths so downstream test eval (which
-        # expects {output_dir}/best_dev_loss and /best_dev_f1) just works.
+        # expects {output_dir}/best_dev_loss and /{gen_metric_key}) just works.
         # The per-r subdirectories are kept on disk for auditing.
         if train_config.save_model:
             if winner_dev_loss_src and os.path.isdir(winner_dev_loss_src):
@@ -330,11 +337,11 @@ def _run_sweep(args, train_config, fsdp_config, distil_config, data_config,
                 print(f"[sweep] Copied dev-loss winner: {winner_dev_loss_src} → {winner_dev_loss_dst}", flush=True)
             else:
                 print(f"[sweep] WARNING: dev-loss winner src missing ({winner_dev_loss_src}) — no canonical copy made.", flush=True)
-            if winner_dev_f1_src and os.path.isdir(winner_dev_f1_src):
-                _copytree_overwrite(winner_dev_f1_src, winner_dev_f1_dst)
-                print(f"[sweep] Copied dev-f1 winner: {winner_dev_f1_src} → {winner_dev_f1_dst}", flush=True)
+            if winner_dev_gen_src and os.path.isdir(winner_dev_gen_src):
+                _copytree_overwrite(winner_dev_gen_src, winner_dev_gen_dst)
+                print(f"[sweep] Copied {gen_metric_label} winner: {winner_dev_gen_src} → {winner_dev_gen_dst}", flush=True)
             else:
-                print(f"[sweep] WARNING: dev-f1 winner src missing ({winner_dev_f1_src}) — no canonical copy made.", flush=True)
+                print(f"[sweep] WARNING: {gen_metric_label} winner src missing ({winner_dev_gen_src}) — no canonical copy made.", flush=True)
 
         summary_path = os.path.join(base_output_dir, "sweep_summary.json")
         with open(summary_path, "w") as fh:

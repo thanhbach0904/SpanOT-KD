@@ -94,9 +94,9 @@ echo "[1/3] Training..."
 CUDA_VISIBLE_DEVICES=0 eval "$TRAIN_CMD"
 
 echo ""
-echo "[2/3] Evaluating (best_dev_f1 checkpoint)..."
-EVAL_CMD_F1="python $REPO_PATH/llm_distillation/benchmark/benchmarkfairytaleQAbasellama.py \
-  --model_id $OUTPUT_DIR/best_dev_f1 \
+echo "[2/3] Evaluating (best_dev_rouge_l checkpoint)..."
+EVAL_CMD_ROUGE_L="python $REPO_PATH/llm_distillation/benchmark/benchmarkfairytaleQAbasellama.py \
+  --model_id $OUTPUT_DIR/best_dev_rouge_l \
   --model_tokenizer $STUDENT_PATH \
   --dataset_id $REPO_PATH/llm_distillation/datasets/hf/uld_loss_Llama-2-7b-chat-hf-FairytaleQA/fairytaleQA \
   --split_name validation \
@@ -110,7 +110,7 @@ EVAL_CMD_F1="python $REPO_PATH/llm_distillation/benchmark/benchmarkfairytaleQAba
   --save_predictions \
   --output_path $REPO_PATH/eval_results/fairytaleqa_${STUDENT_MODEL%%-*}_teacher_seed${SEED}/"
 
-CUDA_VISIBLE_DEVICES=0 eval "$EVAL_CMD_F1"
+CUDA_VISIBLE_DEVICES=0 eval "$EVAL_CMD_ROUGE_L"
 
 echo ""
 echo "[3/3] Evaluating (best_dev_loss checkpoint)..."
