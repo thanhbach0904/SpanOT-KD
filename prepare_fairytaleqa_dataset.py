@@ -9,13 +9,20 @@ Input:  $HOME/FairytaleQAData  (cloned GitHub repo)
           data-by-train-split/section-stories/        (one text file per story)
 
 Output: $HOME/Multi-Level-OT/llm_distillation/datasets/hf/
-            uld_loss_Llama-2-7b-chat-hf-FairytaleQA/fairytaleQA
+            uld_loss_<teacher basename>-FairytaleQA/fairytaleQA
+        (the loader in fairytaleQA.py and run_experiments_fairytaleqa.sh derive
+        the same folder name from the teacher path, so labels are never shared
+        across teachers)
 
 Output DatasetDict splits: train, validation
 Output columns per row:    context, question, answers_generated
 
 Run:
-    python prepare_fairytaleqa_dataset.py --batch_size 4
+    python prepare_fairytaleqa_dataset.py --batch_size 4                 # Llama-2 (default)
+    python prepare_fairytaleqa_dataset.py --batch_size 8 \\
+        --teacher_path $HOME/models/Qwen-7B-Chat
+    # dry run first (writes to a separate "-smoke" folder, never the real one):
+    python prepare_fairytaleqa_dataset.py --teacher_path ... --max_samples 16 --batch_size 2
 """
 import os
 import sys
@@ -23,16 +30,13 @@ import csv
 import torch
 import argparse
 from datasets import Dataset, DatasetDict
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoModelForCausalLM
 from tqdm import tqdm
 
 HOME = os.getenv("HOME")
-TEACHER_PATH = f"{HOME}/models/Llama-2-7b-chat-hf"
+DEFAULT_TEACHER_PATH = f"{HOME}/models/Llama-2-7b-chat-hf"
 RAW_DATA_DIR = f"{HOME}/FairytaleQAData"
-OUTPUT_PATH = (
-    f"{HOME}/Multi-Level-OT/llm_distillation/datasets/hf"
-    "/uld_loss_Llama-2-7b-chat-hf-FairytaleQA/fairytaleQA"
-)
+HF_DATASETS_DIR = f"{HOME}/Multi-Level-OT/llm_distillation/datasets/hf"
 
 sys.path.append(f"{HOME}/Multi-Level-OT/llm_distillation")
 
@@ -203,7 +207,7 @@ def build_prompt(item: dict, tokenizer) -> str:
     from llm_distillation.prompt.prompt import create_chat_prompt
     return create_chat_prompt(
         "qa_generative",
-        2,  # shot=2 matches fairytaleQA.py for Llama-2-7b-chat-hf
+        2,  # shot=2 must match fairytaleQA.py's shot for this teacher (Llama-2 and Qwen-7B-Chat both use 2)
         context=item["context"],
         question=item["question"],
         sys_user=False,
@@ -222,6 +226,13 @@ def run_inference(
     device = next(model.parameters()).device
     answers = []
 
+    # Qwen1 chat turns end with <|im_end|>, which is NOT tokenizer.eos_token
+    # (<|endoftext|>). Without it as a stop id the model keeps generating the
+    # next "<|im_start|>..." turn until max_new_tokens for every row.
+    eos_ids = [tokenizer.eos_token_id]
+    if getattr(tokenizer, "im_end_id", None) is not None:
+        eos_ids.append(tokenizer.im_end_id)
+
     for i in tqdm(range(0, len(items), batch_size), desc="teacher inference"):
         batch = items[i : i + batch_size]
         prompts = [build_prompt(x, tokenizer) for x in batch]
@@ -238,7 +249,11 @@ def run_inference(
             **enc,
             max_new_tokens=max_new_tokens,
             do_sample=False,
-            eos_token_id=tokenizer.eos_token_id,
+            # Qwen-7B-Chat's generation_config may carry a repetition_penalty;
+            # pin it so greedy decoding is the same across teachers.
+            repetition_penalty=1.0,
+            eos_token_id=eos_ids,
+            pad_token_id=tokenizer.pad_token_id,
         )
         # strip prompt tokens, keep only generated portion
         out = out[:, enc["input_ids"].shape[1] :]
@@ -332,6 +347,19 @@ def main():
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_new_tokens", type=int, default=150)
     parser.add_argument(
+        "--teacher_path",
+        default=DEFAULT_TEACHER_PATH,
+        help="Local teacher dir; its basename names the output folder "
+             "(uld_loss_<basename>-FairytaleQA)",
+    )
+    parser.add_argument(
+        "--max_samples",
+        type=int,
+        default=None,
+        help="Dry run: keep only the first N rows per split and write to a "
+             "separate '-smoke' folder",
+    )
+    parser.add_argument(
         "--val_split",
         default="val",
         help="Split label used in story_meta.csv for validation (usually 'val')",
@@ -347,23 +375,51 @@ def main():
         _peek()
         return
 
-    # ── Load teacher ─────────────────────────────────────────────────────────
-    print(f"Loading tokenizer from {TEACHER_PATH}")
-    tokenizer = AutoTokenizer.from_pretrained(TEACHER_PATH)
-    tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
-    tokenizer.padding_side = "left"
-
-    print(f"Loading model from {TEACHER_PATH}")
-    model = AutoModelForCausalLM.from_pretrained(
-        TEACHER_PATH, torch_dtype=torch.bfloat16, device_map="auto"
+    teacher_path = args.teacher_path.rstrip("/")
+    if not os.path.isdir(teacher_path):
+        raise FileNotFoundError(f"Teacher dir does not exist: {teacher_path}")
+    teacher_name = os.path.basename(teacher_path)
+    output_path = (
+        f"{HF_DATASETS_DIR}/uld_loss_{teacher_name}-FairytaleQA"
+        f"{'-smoke' if args.max_samples else ''}/fairytaleQA"
     )
-    model.resize_token_embeddings(len(tokenizer))
+    print(f"Teacher: {teacher_path}\nOutput : {output_path}")
+
+    # ── Load teacher ─────────────────────────────────────────────────────────
+    # load_tokenizer is the same function the trainer uses for the teacher, so
+    # the chat template here (incl. the ChatML patch for Qwen1) is identical to
+    # the one applied when the teacher is later fed the same prompt.
+    from models.models_utils import load_tokenizer
+
+    print(f"Loading tokenizer from {teacher_path}")
+    tokenizer = load_tokenizer(teacher_path, encoder_decoder=False)
+    tokenizer.padding_side = "left"
+    # Qwen1 = trust_remote_code tokenizer exposing im_start_id (same test as load_tokenizer)
+    is_qwen1 = getattr(tokenizer, "im_start_id", None) is not None
+
+    print(f"Loading model from {teacher_path}")
+    if is_qwen1:
+        # Mirrors models_utils.load_model: Qwen1's remote code takes precision
+        # from bf16/fp32 config flags, and its embedding matrix (151936) is
+        # larger than len(tokenizer) (151851), so resize_token_embeddings would
+        # truncate it — skip that call for Qwen1.
+        model = AutoModelForCausalLM.from_pretrained(
+            teacher_path, device_map="auto", trust_remote_code=True, bf16=True, fp32=False
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            teacher_path, torch_dtype=torch.bfloat16, device_map="auto"
+        )
+        model.resize_token_embeddings(len(tokenizer))
     model.eval()
 
     # ── Load raw FairytaleQA ─────────────────────────────────────────────────
     print("Loading raw FairytaleQA splits …")
     train_items = load_split("train")
     val_items = load_split(args.val_split)
+    if args.max_samples:
+        train_items = train_items[: args.max_samples]
+        val_items = val_items[: args.max_samples]
     print(f"  train: {len(train_items)} rows, val: {len(val_items)} rows")
     print(f"  sample: {train_items[0]}")
 
@@ -378,17 +434,23 @@ def main():
         val_items, tokenizer, model, args.batch_size, args.max_new_tokens
     )
 
+    # Empty labels would silently teach the student to emit nothing; surface them.
+    for name, ans in (("train", train_answers), ("val", val_answers)):
+        n_empty = sum(1 for a in ans if not a)
+        print(f"  [{name}] empty answers: {n_empty}/{len(ans)}")
+    print("  first 3 train answers:", train_answers[:3])
+
     # ── Save ─────────────────────────────────────────────────────────────────
-    os.makedirs(OUTPUT_PATH, exist_ok=True)
+    os.makedirs(output_path, exist_ok=True)
     ds = DatasetDict(
         {
             "train": make_dataset(train_items, train_answers),
             "validation": make_dataset(val_items, val_answers),
         }
     )
-    ds.save_to_disk(OUTPUT_PATH)
+    ds.save_to_disk(output_path)
 
-    print(f"\nSaved to {OUTPUT_PATH}")
+    print(f"\nSaved to {output_path}")
     print(ds)
     print("Train sample:", ds["train"][0])
 

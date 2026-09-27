@@ -20,6 +20,14 @@ def tokenize(item, tokenizer):
         shot = 4
     elif tokenizer.name_or_path == f"{os.getenv('HOME')}/tiiuae/falcon-7b-instruct":
         shot = 2
+    elif tokenizer.name_or_path == f"{os.getenv('HOME')}/models/Qwen-7B-Chat":
+        # Must equal the shot used by prepare_fairytaleqa_dataset.py when it
+        # generated this teacher's labels (2, same as Llama-2).
+        shot = 2
+    else:
+        # Unlisted chat teacher: `shot` was previously unbound here
+        # (UnboundLocalError as soon as is_chat=True). Mirrors qed.py.
+        shot = 0
 
     if is_chat:
         prompt = create_chat_prompt(
@@ -58,7 +66,21 @@ def tokenize(item, tokenizer):
     return dict(combined_tokens, attention_mask=[1]*len(combined_tokens["input_ids"]))
 
 
-FAIRYTALEQA_DISK_PATH = f"{os.getenv('HOME')}/Multi-Level-OT/llm_distillation/datasets/hf/uld_loss_Llama-2-7b-chat-hf-FairytaleQA/fairytaleQA"
+FAIRYTALEQA_HF_DIR = f"{os.getenv('HOME')}/Multi-Level-OT/llm_distillation/datasets/hf"
+
+
+def _fairytaleqa_disk_path(dataset_config):
+    """Folder of teacher-generated labels for the teacher of this run.
+
+    The labels (answers_generated) are the teacher's own outputs, so the folder
+    is keyed by the teacher basename — same rule as prepare_fairytaleqa_dataset.py
+    and run_experiments_fairytaleqa.sh. generated_by is set to the teacher's
+    path in data_utils.get_distillation_dataloader; it is None only outside
+    distillation, where we keep the legacy Llama-2 folder.
+    """
+    generated_by = getattr(dataset_config, "generated_by", None) or ""
+    teacher = os.path.basename(generated_by.rstrip("/")) or "Llama-2-7b-chat-hf"
+    return f"{FAIRYTALEQA_HF_DIR}/uld_loss_{teacher}-FairytaleQA/fairytaleQA"
 
 
 def _load_raw_train_dev(dataset_config):
@@ -69,7 +91,9 @@ def _load_raw_train_dev(dataset_config):
     'validation' split is the held-out final test set — never touched here.
     Returns (raw_train, raw_dev), both RAW (not tokenized).
     """
-    full_train = load_from_disk(FAIRYTALEQA_DISK_PATH)["train"]
+    disk_path = _fairytaleqa_disk_path(dataset_config)
+    print(f"[fairytaleQA loader] labels from {disk_path}")
+    full_train = load_from_disk(disk_path)["train"]
     splits = full_train.train_test_split(
         test_size=dataset_config.dev_split_ratio,
         seed=dataset_config.dev_split_seed,

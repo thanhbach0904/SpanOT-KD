@@ -1,13 +1,16 @@
 #!/bin/bash
 # FairyTaleQA Dataset Experiments: Train and evaluate OPT-350m and Pythia-410m
-# students distilled from Llama-2-7b-chat-hf, Qwen2-8B, or BLOOMZ-560M
+# students distilled from Llama-2-7b-chat-hf, Qwen-7B-Chat, or BLOOMZ-560M
+#
+# Prerequisite (once per teacher): generate that teacher's labels, e.g.
+#   python prepare_fairytaleqa_dataset.py --batch_size 8 --teacher_path /workspace/models/Qwen-7B-Chat
 #
 # Usage:
 #   bash run_experiments_fairytaleqa.sh <teacher_model_path> <student_model> <seed> [span_kd_enabled]
 #
 # Example:
 #   bash run_experiments_fairytaleqa.sh /workspace/models/Llama-2-7b-chat-hf opt-350m 42 true
-#   bash run_experiments_fairytaleqa.sh /workspace/models/Qwen2-8B pythia-410m 4 false
+#   bash run_experiments_fairytaleqa.sh /workspace/models/Qwen-7B-Chat opt-350m 63 false
 #   bash run_experiments_fairytaleqa.sh /workspace/models/bloomz-560M opt-350m 42 true
 
 set -euo pipefail
@@ -47,7 +50,30 @@ esac
 REPO_PATH="$HOME/SpanOT-KD"
 STUDENT_PATH="$REPO_PATH/EleutherAI/$STUDENT_MODEL"
 DATASET_FILE="$REPO_PATH/llm_distillation/datasets/loader/fairytaleQA.py"
-OUTPUT_DIR="$REPO_PATH/output_fairytaleqa_${STUDENT_MODEL%%-*}"
+
+# Labels (answers_generated) are the teacher's own generations, so both
+# training (loader keys on the teacher basename) and the eval references below
+# must come from THIS teacher's folder. Generate it with:
+#   python prepare_fairytaleqa_dataset.py --teacher_path <teacher_model_path>
+TEACHER_TAG="$(basename "${TEACHER_MODEL_PATH%/}")"
+DATASET_ID="$REPO_PATH/llm_distillation/datasets/hf/uld_loss_${TEACHER_TAG}-FairytaleQA/fairytaleQA"
+if [ ! -d "$DATASET_ID" ]; then
+  echo "ERROR: No teacher-labelled dataset for $TEACHER_TAG at: $DATASET_ID" >&2
+  echo "       Run: python prepare_fairytaleqa_dataset.py --teacher_path $TEACHER_MODEL_PATH" >&2
+  exit 1
+fi
+
+# Output/eval dirs previously encoded only student+seed, so different teachers
+# (and vanilla vs SpanOT-KD) overwrote each other's checkpoints and predictions.
+# Same tagging as run_experiments_qed.sh.
+if [ "$SPAN_KD_ENABLED" = "true" ]; then
+  METHOD_TAG="spanotkd"
+else
+  METHOD_TAG="vanilla"
+fi
+RUN_TAG="${STUDENT_MODEL%%-*}_${TEACHER_TAG}_${METHOD_TAG}_seed${SEED}"
+OUTPUT_DIR="$REPO_PATH/output_fairytaleqa_${RUN_TAG}"
+EVAL_DIR="$REPO_PATH/eval_results/fairytaleqa_${RUN_TAG}"
 
 echo "════════════════════════════════════════════════════════════════"
 echo "FairyTaleQA Dataset Experiments"
@@ -57,7 +83,7 @@ echo "Student Model    : $STUDENT_MODEL"
 echo "Student Path     : $STUDENT_PATH"
 echo "Seed             : $SEED"
 echo "SpanOT-KD        : $SPAN_KD_ENABLED"
-echo "Dataset          : FairyTaleQA"
+echo "Dataset          : FairyTaleQA ($DATASET_ID)"
 echo "Output Dir       : $OUTPUT_DIR"
 echo "════════════════════════════════════════════════════════════════"
 echo ""
@@ -98,7 +124,7 @@ echo "[2/3] Evaluating (best_dev_rouge_l checkpoint)..."
 EVAL_CMD_ROUGE_L="python $REPO_PATH/llm_distillation/benchmark/benchmarkfairytaleQAbasellama.py \
   --model_id $OUTPUT_DIR/best_dev_rouge_l \
   --model_tokenizer $STUDENT_PATH \
-  --dataset_id $REPO_PATH/llm_distillation/datasets/hf/uld_loss_Llama-2-7b-chat-hf-FairytaleQA/fairytaleQA \
+  --dataset_id $DATASET_ID \
   --split_name validation \
   --mapping $REPO_PATH/llm_distillation/benchmark/mapping/fairytaleqa_uld_loss.json \
   --batch_size 4 \
@@ -108,7 +134,7 @@ EVAL_CMD_ROUGE_L="python $REPO_PATH/llm_distillation/benchmark/benchmarkfairytal
   --task qa \
   --bfloat \
   --save_predictions \
-  --output_path $REPO_PATH/eval_results/fairytaleqa_${STUDENT_MODEL%%-*}_teacher_seed${SEED}/"
+  --output_path $EVAL_DIR/"
 
 CUDA_VISIBLE_DEVICES=0 eval "$EVAL_CMD_ROUGE_L"
 
@@ -117,7 +143,7 @@ echo "[3/3] Evaluating (best_dev_loss checkpoint)..."
 EVAL_CMD_LOSS="python $REPO_PATH/llm_distillation/benchmark/benchmarkfairytaleQAbasellama.py \
   --model_id $OUTPUT_DIR/best_dev_loss \
   --model_tokenizer $STUDENT_PATH \
-  --dataset_id $REPO_PATH/llm_distillation/datasets/hf/uld_loss_Llama-2-7b-chat-hf-FairytaleQA/fairytaleQA \
+  --dataset_id $DATASET_ID \
   --split_name validation \
   --mapping $REPO_PATH/llm_distillation/benchmark/mapping/fairytaleqa_uld_loss.json \
   --batch_size 4 \
@@ -127,7 +153,7 @@ EVAL_CMD_LOSS="python $REPO_PATH/llm_distillation/benchmark/benchmarkfairytaleQA
   --task qa \
   --bfloat \
   --save_predictions \
-  --output_path $REPO_PATH/eval_results/fairytaleqa_${STUDENT_MODEL%%-*}_teacher_seed${SEED}_loss/"
+  --output_path ${EVAL_DIR}_loss/"
 
 CUDA_VISIBLE_DEVICES=0 eval "$EVAL_CMD_LOSS"
 
@@ -135,6 +161,6 @@ echo ""
 echo "════════════════════════════════════════════════════════════════"
 echo "FairyTaleQA Experiments Complete"
 echo "Results saved to:"
-echo "  - $REPO_PATH/eval_results/fairytaleqa_${STUDENT_MODEL%%-*}_teacher_seed${SEED}/"
-echo "  - $REPO_PATH/eval_results/fairytaleqa_${STUDENT_MODEL%%-*}_teacher_seed${SEED}_loss/"
+echo "  - $EVAL_DIR/"
+echo "  - ${EVAL_DIR}_loss/"
 echo "════════════════════════════════════════════════════════════════"
