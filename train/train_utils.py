@@ -259,6 +259,9 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
             span_aggregation=getattr(distil_config, "span_aggregation", "mean"),
             span_top_r=getattr(distil_config, "span_top_r", 0.5),
             span_low_delta=getattr(distil_config, "span_low_delta", 0.1),
+            span_select_mode=getattr(distil_config, "span_select_mode", "entropy"),
+            span_random_pool=getattr(distil_config, "span_random_pool", "active"),
+            span_random_seed=train_config.seed,
         )
 
     # Create a gradient scaler for fp16

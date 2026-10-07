@@ -9,6 +9,7 @@
 #   bash run_experiments_qed.sh /workspace/models/Llama-2-7b-chat-hf opt-350m 42 true
 #   bash run_experiments_qed.sh /workspace/models/Qwen2-8B pythia-410m 4 false
 #   bash run_experiments_qed.sh /workspace/models/bloomz-560M opt-350m 42 true
+#   bash run_experiments_qed.sh /workspace/models/Llama-2-7b-chat-hf opt-350m 42 random   # random-span control
 
 set -euo pipefail
 
@@ -52,11 +53,12 @@ DATASET_FILE="$REPO_PATH/llm_distillation/datasets/loader/qed.py"
 # silently overwrote each other's checkpoints AND eval predictions. Encode
 # teacher basename + method so runs are distinguishable on disk.
 TEACHER_TAG="$(basename "$TEACHER_MODEL_PATH")"
-if [ "$SPAN_KD_ENABLED" = "true" ]; then
-  METHOD_TAG="spanotkd"
-else
-  METHOD_TAG="vanilla"
-fi
+case "$SPAN_KD_ENABLED" in
+  true)   METHOD_TAG="spanotkd" ;;
+  random) METHOD_TAG="randomspan" ;;   # random-span control, same r sweep + dev selection as SpanOT-KD
+  false)  METHOD_TAG="vanilla" ;;
+  *) echo "ERROR: span_kd_enabled must be true|false|random, got '$SPAN_KD_ENABLED'" >&2; exit 1 ;;
+esac
 RUN_TAG="${STUDENT_MODEL%%-*}_${TEACHER_TAG}_${METHOD_TAG}_seed${SEED}"
 OUTPUT_DIR="$REPO_PATH/output_qed_${RUN_TAG}"
 
@@ -94,12 +96,17 @@ TRAIN_CMD="python $REPO_PATH/finetuning.py \
   --f 1 \
   --seed $SEED"
 
-if [ "$SPAN_KD_ENABLED" = "true" ]; then
+if [ "$SPAN_KD_ENABLED" = "true" ] || [ "$SPAN_KD_ENABLED" = "random" ]; then
   TRAIN_CMD="$TRAIN_CMD \
   --distillation_config_span_kd_enabled \
   --distillation_config_span_aggregation mean \
   --distillation_config_span_low_delta 0.1 \
   --distillation_config_span_top_r_sweep"
+fi
+if [ "$SPAN_KD_ENABLED" = "random" ]; then
+  TRAIN_CMD="$TRAIN_CMD \
+  --distillation_config_span_select_mode random \
+  --distillation_config_span_random_pool active"
 fi
 
 echo "[1/3] Training..."

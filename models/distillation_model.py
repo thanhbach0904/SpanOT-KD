@@ -291,7 +291,8 @@ class DistillationModel2(nn.Module):
 
 class DistillationLoss(nn.Module):
     def __init__(self, batch_limit=100, store_path='teacher_logits_partial.npy', crossentropy_weight=1, distillation_weight=1, student_temperature=1, teacher_temperature=1, skip_student_eos=False, skip_teacher_eos=False, ignore_index=-100, debug=False, debug_rank=0, tokenizer_student=None, tokenizer_teacher=None, f=1,
-                 span_kd_enabled=False, span_aggregation="mean", span_top_r=0.5, span_low_delta=0.1):
+                 span_kd_enabled=False, span_aggregation="mean", span_top_r=0.5, span_low_delta=0.1,
+                 span_select_mode="entropy", span_random_pool="active", span_random_seed=0):
         super().__init__()
         self.crossentropy_weight = crossentropy_weight
         self.distillation_weight = distillation_weight
@@ -314,6 +315,11 @@ class DistillationLoss(nn.Module):
         self.span_aggregation = span_aggregation
         self.span_top_r = float(span_top_r)
         self.span_low_delta = float(span_low_delta)
+        assert span_select_mode in ("entropy", "random"), span_select_mode
+        assert span_random_pool in ("active", "pos"), span_random_pool
+        self.span_select_mode = span_select_mode
+        self.span_random_pool = span_random_pool
+        self.span_random_seed = int(span_random_seed)
         # Tokenisers are required to identify aligned spans (character-level
         # alignment between the student and teacher tokenisations of the
         # ground-truth answer). Loaded eagerly here so the SpanOT path does
@@ -356,7 +362,8 @@ class DistillationLoss(nn.Module):
         if self.span_kd_enabled:
             print(
                 f"[SpanOT-KD] enabled — aggregation={self.span_aggregation}, "
-                f"top_r={self.span_top_r}, low_delta={self.span_low_delta}"
+                f"top_r={self.span_top_r}, low_delta={self.span_low_delta}, "
+                f"select_mode={self.span_select_mode}, random_pool={self.span_random_pool}"
             )
 
     def forward(self, epoch, student_predictions, teacher_predictions, student_targets, teacher_targets, rank=0, step=None):
@@ -487,6 +494,11 @@ class DistillationLoss(nn.Module):
                 low_delta=self.span_low_delta,
                 aggregation=self.span_aggregation,
                 ignore_index=self.ignore_index,
+                select_mode=self.span_select_mode,
+                random_seed=self.span_random_seed,
+                epoch=int(epoch),
+                step=int(step) if step is not None else 0,
+                random_pool=self.span_random_pool,
             )
 
         # --- SpanOT-KD side analysis (read-only, env-gated) ---

@@ -45,3 +45,10 @@ class distillation_config:
     # Down-weight for low-priority spans. Methodology recommends (0, 0.1].
     # delta=1.0 also collapses to MultiLevelOT.
     span_low_delta: float = 0.1
+    # Random-span control (reviewer: selection vs. reduced effective weight).
+    #   "entropy" — SpanOT-KD as published.
+    #   "random"  — same per-sample token mass at weight 1.0, random positions.
+    span_select_mode: str = "entropy"
+    # Pool the random spans are drawn from: "active" (all aligned spans) or
+    # "pos" (only spans with entropy gap > 0, isolates the ranking step).
+    span_random_pool: str = "active"

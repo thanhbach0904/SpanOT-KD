@@ -67,6 +67,10 @@ def parse_args():
                         help="Fraction of spans (sorted by entropy gap) deemed high-priority. r=1.0 collapses to MultiLevelOT")
     parser.add_argument("--distillation_config_span_low_delta", type=float, default=0.1,
                         help="Down-weight applied to non-top-r spans. Methodology recommends (0, 0.1]. delta=1.0 collapses to MultiLevelOT")
+    parser.add_argument("--distillation_config_span_select_mode", type=str, default="entropy", choices=["entropy", "random"],
+                        help="'entropy': SpanOT-KD. 'random': control with the same per-sample token mass at weight 1.0 but random span positions")
+    parser.add_argument("--distillation_config_span_random_pool", type=str, default="active", choices=["active", "pos"],
+                        help="Only for select_mode=random: draw from all aligned spans ('active') or only spans with gap>0 ('pos')")
     # Optional span_top_r sweep (per seed). When enabled the script trains 3
     # students consecutively with span_top_r in SPAN_TOP_R_SWEEP_VALUES, then
     # selects the best by dev F1 and by dev CE loss (these can differ) and
@@ -135,6 +139,8 @@ def _execute_training_run(args, train_config, fsdp_config, distil_config, data_c
             r_override if r_override is not None else args.distillation_config_span_top_r
         )
         distil_config.span_low_delta = args.distillation_config_span_low_delta
+        distil_config.span_select_mode = args.distillation_config_span_select_mode
+        distil_config.span_random_pool = args.distillation_config_span_random_pool
         if rank == 0:
             tag = f" [{sweep_tag}]" if sweep_tag else ""
             if distil_config.span_kd_enabled:
@@ -142,6 +148,8 @@ def _execute_training_run(args, train_config, fsdp_config, distil_config, data_c
                 print(f"  span_aggregation : {distil_config.span_aggregation}", flush=True)
                 print(f"  span_top_r       : {distil_config.span_top_r}", flush=True)
                 print(f"  span_low_delta   : {distil_config.span_low_delta}", flush=True)
+                print(f"  span_select_mode : {distil_config.span_select_mode}", flush=True)
+                print(f"  span_random_pool : {distil_config.span_random_pool}", flush=True)
             else:
                 print(f"[SpanOT-KD]{tag} disabled (vanilla MultiLevelOT)", flush=True)
         student_tokenizer, teacher_tokenizer, model = get_distillation_models(

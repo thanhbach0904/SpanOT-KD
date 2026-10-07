@@ -72,6 +72,7 @@ MultiLevelOT applies before this code is invoked.
 from __future__ import annotations
 
 import math
+import random
 import warnings
 from typing import List, Optional, Tuple
 
@@ -213,6 +214,38 @@ def _aggregate(values: torch.Tensor, mode: str) -> float:
     return float(values.mean().item())
 
 
+def _sample_spans_matching_mass(
+    candidates: List[List[int]],
+    target_mass: int,
+    rng: random.Random,
+) -> List[List[int]]:
+    """Randomly pick spans whose total teacher-token count is <= ``target_mass``.
+
+    Control for the "effective distillation weight" confound: the loss takes
+    ``mean(omega * per_pos_loss)`` without renormalising, so a sample's
+    effective weight is ``mean(omega)``, i.e. it depends on how many *tokens*
+    (not spans) carry weight 1. Shuffle, then add spans greedily while the
+    running token count stays within the target. If nothing fits (every
+    candidate longer than the target) take the first shuffled span, mirroring
+    the ``max(1, ceil(...))`` rule of the entropy path. The mass can therefore
+    undershoot, or overshoot in the fallback; callers log mean(omega) per arm
+    to report the residual.
+    """
+    if target_mass <= 0 or not candidates:
+        return []
+    order = list(candidates)
+    rng.shuffle(order)
+    chosen: List[List[int]] = []
+    mass = 0
+    for t_idx in order:
+        if mass + len(t_idx) <= target_mass:
+            chosen.append(t_idx)
+            mass += len(t_idx)
+    if not chosen:
+        chosen = [order[0]]
+    return chosen
+
+
 def compute_position_weights_one_sample(
     student_probs: torch.Tensor,
     teacher_probs: torch.Tensor,
@@ -223,6 +256,9 @@ def compute_position_weights_one_sample(
     top_r: float,
     low_delta: float,
     aggregation: str = "mean",
+    select_mode: str = "entropy",
+    rng: Optional[random.Random] = None,
+    random_pool: str = "active",
 ) -> torch.Tensor:
     """Build the position-weight vector for a single sample (Eq. 14).
 
@@ -341,6 +377,23 @@ def compute_position_weights_one_sample(
         for pos in t_idx:
             if 0 <= pos < T_max:
                 weights[pos] = mu
+
+    if select_mode == "random":
+        # Random-span control: same token mass at weight 1.0 as the entropy
+        # path chose for this sample, but at random span positions. Entropy
+        # is still computed above only to read off that target mass.
+        if rng is None:
+            raise ValueError("select_mode='random' requires an rng")
+        target_mass = sum(len(t_idx) for t_idx, _ in pos_spans[:num_high])
+        pool = spans if random_pool == "active" else pos_spans
+        for t_idx, _ in spans:
+            for pos in t_idx:
+                if 0 <= pos < T_max:
+                    weights[pos] = float(low_delta)
+        for t_idx in _sample_spans_matching_mass([t for t, _ in pool], target_mass, rng):
+            for pos in t_idx:
+                if 0 <= pos < T_max:
+                    weights[pos] = 1.0
     return weights
 
 
@@ -357,8 +410,18 @@ def compute_batch_position_weights(
     low_delta: float,
     aggregation: str = "mean",
     ignore_index: int = -100,
+    select_mode: str = "entropy",
+    random_seed: int = 0,
+    epoch: int = 0,
+    step: int = 0,
+    random_pool: str = "active",
 ) -> torch.Tensor:
     """Batched wrapper: build a (B, T_max) position-weight tensor.
+
+    ``select_mode="random"`` is the random-span control. Its RNG is a private
+    ``random.Random`` keyed on (random_seed, epoch, step, b), so the global
+    torch/numpy/python streams (dropout, data order) are untouched and a
+    resumed run reproduces the same masks.
 
     For each sample we:
       1. Decode the ground-truth answer text from the *student* labels —
@@ -431,5 +494,8 @@ def compute_batch_position_weights(
             top_r=top_r,
             low_delta=low_delta,
             aggregation=aggregation,
+            select_mode=select_mode,
+            rng=random.Random(f"{random_seed}:{epoch}:{step}:{b}") if select_mode == "random" else None,
+            random_pool=random_pool,
         )
     return weights
