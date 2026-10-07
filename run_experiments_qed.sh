@@ -29,6 +29,7 @@ TEACHER_MODEL_PATH="$1"
 STUDENT_MODEL="$2"
 SEED="$3"
 SPAN_KD_ENABLED="${4:-true}"
+FIXED_R="${5:-}"   # optional: fixed span_top_r (no sweep). Empty = sweep {0.3,0.5,0.7} with dev selection.
 
 # Validate inputs
 if [ ! -d "$TEACHER_MODEL_PATH" ]; then
@@ -59,6 +60,7 @@ case "$SPAN_KD_ENABLED" in
   false)  METHOD_TAG="vanilla" ;;
   *) echo "ERROR: span_kd_enabled must be true|false|random, got '$SPAN_KD_ENABLED'" >&2; exit 1 ;;
 esac
+if [ -n "$FIXED_R" ]; then METHOD_TAG="${METHOD_TAG}_r${FIXED_R}"; fi
 RUN_TAG="${STUDENT_MODEL%%-*}_${TEACHER_TAG}_${METHOD_TAG}_seed${SEED}"
 OUTPUT_DIR="$REPO_PATH/output_qed_${RUN_TAG}"
 
@@ -100,8 +102,12 @@ if [ "$SPAN_KD_ENABLED" = "true" ] || [ "$SPAN_KD_ENABLED" = "random" ]; then
   TRAIN_CMD="$TRAIN_CMD \
   --distillation_config_span_kd_enabled \
   --distillation_config_span_aggregation mean \
-  --distillation_config_span_low_delta 0.1 \
-  --distillation_config_span_top_r_sweep"
+  --distillation_config_span_low_delta 0.1"
+  if [ -n "$FIXED_R" ]; then
+    TRAIN_CMD="$TRAIN_CMD --distillation_config_span_top_r $FIXED_R"
+  else
+    TRAIN_CMD="$TRAIN_CMD --distillation_config_span_top_r_sweep"
+  fi
 fi
 if [ "$SPAN_KD_ENABLED" = "random" ]; then
   TRAIN_CMD="$TRAIN_CMD \
