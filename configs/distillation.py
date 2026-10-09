@@ -39,8 +39,9 @@ class distillation_config:
     #   "mean" — Eq. 10 (length-normalised, span-size invariant)
     #   "sum"  — Eq. 11 (accumulated, biases toward long spans)
     span_aggregation: str = "mean"
-    # Fraction of spans (sorted by gap, descending) that receive weight 1.0.
-    # The rest receive `span_low_delta`. r=1.0 collapses to MultiLevelOT.
+    # Fraction of positive-gap spans (sorted by gap, descending) that receive
+    # weight 1.0. The rest, and every gap<=0 span, receive `span_low_delta`.
+    # r=1.0 is therefore a gap>0 filter, NOT MultiLevelOT (only delta=1.0 is).
     span_top_r: float = 0.5
     # Down-weight for low-priority spans. Methodology recommends (0, 0.1].
     # delta=1.0 also collapses to MultiLevelOT.
@@ -48,6 +49,8 @@ class distillation_config:
     # Random-span control (reviewer: selection vs. reduced effective weight).
     #   "entropy" — SpanOT-KD as published.
     #   "random"  — same per-sample token mass at weight 1.0, random positions.
+    #   "matched" — same per-sample mean weight as "entropy", spread uniformly
+    #               over [:min(student_size, teacher_size)].
     span_select_mode: str = "entropy"
     # Pool the random spans are drawn from: "active" (all aligned spans) or
     # "pos" (only spans with entropy gap > 0, isolates the ranking step).

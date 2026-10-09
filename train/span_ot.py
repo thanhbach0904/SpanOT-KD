@@ -47,8 +47,11 @@ Pipeline (per sample, per training step):
 
 The returned weight tensor has shape ``(B, T_max)`` and is consumed by
 ``DistillationLoss`` to produce the span-weighted HAD / SL / SD components.
-When ``top_r >= 1.0`` or ``low_delta == 1.0`` the weights collapse to all
-ones and the loss reduces *exactly* to the original MultiLevelOT objective.
+Only ``low_delta == 1.0`` collapses the weights to all ones (and the loss
+*exactly* to MultiLevelOT). ``top_r >= 1.0`` does NOT: spans with gap <= 0
+are set to ``low_delta`` before the top-r step, so r=1.0 means "keep every
+positive-gap span at 1.0, down-weight every non-positive-gap span to delta"
+(a pure gap>0 filter with no ranking). See tests/test_span_r1_semantics.py.
 
 **A note on aggregation choice.** Under per-side aggregation, ``mean`` and
 ``sum`` are no longer just amplification-of-long-spans choices: ``sum``
@@ -281,11 +284,21 @@ def compute_position_weights_one_sample(
         the answer-truncated logits, so we clip both lists to
         ``min(student_size, len(student_offsets))`` etc. before alignment.
     top_r:
-        Fraction of spans (sorted by entropy gap, descending) that receive
-        weight ``1.0``. ``top_r >= 1.0`` collapses to MultiLevelOT.
+        Fraction of positive-gap spans (sorted by entropy gap, descending)
+        that receive weight ``1.0``. ``top_r >= 1.0`` keeps all positive-gap
+        spans at 1.0 but non-positive-gap spans stay at ``low_delta``, so it
+        is NOT MultiLevelOT (see module docstring).
     low_delta:
-        Weight assigned to non-top-r spans, expected in ``(0, 0.1]`` per
-        the methodology. ``low_delta == 1.0`` also collapses to MultiLevelOT.
+        Weight assigned to non-top-r and non-positive-gap spans, expected in
+        ``(0, 0.1]`` per the methodology. ``low_delta == 1.0`` collapses to
+        MultiLevelOT.
+    select_mode:
+        ``"entropy"`` (SpanOT-KD), ``"random"`` (same token mass at weight
+        1.0, random spans) or ``"matched"`` (same per-sample mean weight as
+        ``"entropy"`` over the L1 support ``[:min(student_size,
+        teacher_size)]``, spread uniformly; positions beyond keep their
+        entropy-path value so the KL/Sinkhorn mass outside that range is
+        unchanged too).
     aggregation:
         ``"mean"`` (Eq. 10, length-normalised; recommended) or ``"sum"``
         (Eq. 11, accumulated; retained for ablation). Aggregation is now
@@ -302,6 +315,22 @@ def compute_position_weights_one_sample(
     """
     T_max = teacher_probs.size(0)
     device = teacher_probs.device
+
+    if select_mode == "matched":
+        # Matched-weight control: reuse the entropy path (all its early-return
+        # fallbacks included, so the no-positive-gap all-delta case is matched
+        # too), then flatten the L1 support to its mean. Only *where* the
+        # weight goes differs from "entropy"; the per-sample mass is identical.
+        weights = compute_position_weights_one_sample(
+            student_probs, teacher_probs, student_size, teacher_size,
+            student_offsets, teacher_offsets, top_r, low_delta,
+            aggregation=aggregation, select_mode="entropy",
+        )  # [T_max]
+        n = min(int(student_size), int(teacher_size), T_max)
+        if n > 0:
+            weights[:n] = weights[:n].mean()
+        return weights
+
     weights = torch.ones(T_max, device=device)
 
     s_len = min(student_size, len(student_offsets))
@@ -421,7 +450,8 @@ def compute_batch_position_weights(
     ``select_mode="random"`` is the random-span control. Its RNG is a private
     ``random.Random`` keyed on (random_seed, epoch, step, b), so the global
     torch/numpy/python streams (dropout, data order) are untouched and a
-    resumed run reproduces the same masks.
+    resumed run reproduces the same masks. ``select_mode="matched"`` is the
+    matched-weight control (deterministic, no RNG).
 
     For each sample we:
       1. Decode the ground-truth answer text from the *student* labels —
@@ -499,3 +529,31 @@ def compute_batch_position_weights(
             random_pool=random_pool,
         )
     return weights
+
+
+def effective_weight_valid(
+    position_weights: Optional[torch.Tensor],
+    student_sizes: List[int],
+    teacher_sizes: List[int],
+) -> float:
+    """Mean omega over the support the L1 term actually averages over.
+
+    ``w_eff_valid = mean_i( mean(position_weights[i, :size_i]) )`` with
+    ``size_i = min(student_sizes[i], teacher_sizes[i])``; samples with
+    ``size_i <= 0`` are skipped, exactly like the L1 loop in
+    ``DistillationLoss.forward``. Unlike ``position_weights.mean()`` this
+    excludes padding and rows beyond ``size_i`` (which are always 1.0 and bias
+    the plain mean upward). Returns 1.0 when there are no weights or no valid
+    sample.
+    """
+    if position_weights is None:
+        return 1.0
+    per_sample = []
+    for i in range(position_weights.size(0)):
+        size = min(int(student_sizes[i]), int(teacher_sizes[i]))
+        if size <= 0:
+            continue
+        per_sample.append(float(position_weights[i, :size].float().mean().item()))
+    if not per_sample:
+        return 1.0
+    return sum(per_sample) / len(per_sample)

@@ -64,11 +64,12 @@ def parse_args():
     parser.add_argument("--distillation_config_span_aggregation", type=str, default="mean", choices=["mean", "sum"],
                         help="Per-span entropy-gap aggregation: 'mean' (Eq. 10) or 'sum' (Eq. 11)")
     parser.add_argument("--distillation_config_span_top_r", type=float, default=0.5,
-                        help="Fraction of spans (sorted by entropy gap) deemed high-priority. r=1.0 collapses to MultiLevelOT")
+                        help="Fraction of positive-gap spans (sorted by entropy gap) deemed high-priority. r=1.0 is NOT MultiLevelOT: gap<=0 spans still get delta")
     parser.add_argument("--distillation_config_span_low_delta", type=float, default=0.1,
                         help="Down-weight applied to non-top-r spans. Methodology recommends (0, 0.1]. delta=1.0 collapses to MultiLevelOT")
-    parser.add_argument("--distillation_config_span_select_mode", type=str, default="entropy", choices=["entropy", "random"],
-                        help="'entropy': SpanOT-KD. 'random': control with the same per-sample token mass at weight 1.0 but random span positions")
+    parser.add_argument("--distillation_config_span_select_mode", type=str, default="entropy", choices=["entropy", "random", "matched"],
+                        help="'entropy': SpanOT-KD. 'random': control with the same per-sample token mass at weight 1.0 but random span positions. "
+                             "'matched': control with the same per-sample mean weight as 'entropy', spread uniformly over the answer")
     parser.add_argument("--distillation_config_span_random_pool", type=str, default="active", choices=["active", "pos"],
                         help="Only for select_mode=random: draw from all aligned spans ('active') or only spans with gap>0 ('pos')")
     # Optional span_top_r sweep (per seed). When enabled the script trains 3
@@ -80,7 +81,22 @@ def parse_args():
                         help=("Sweep span_top_r over {0.3, 0.5, 0.7} (per seed) and pick the best by dev F1 "
                               "and the best by dev CE loss — possibly two different r values. Requires "
                               "--distillation and --distillation_config_span_kd_enabled."))
+    # Optional extra sweep points appended to SPAN_TOP_R_SWEEP_VALUES (e.g. 1.0,
+    # which isolates the gap>0 filter from the top-r ranking). Default off.
+    # Extras are trained and reported in sweep_summary.json but never compete
+    # in dev winner selection (see _run_sweep._best).
+    parser.add_argument("--distillation_config_span_top_r_extra", type=float, nargs="*", default=[],
+                        help="Extra span_top_r values appended to the sweep grid (default: none)")
+    # Dry-run only: cap train / dev / dev-gen sets to the first N rows. 0 = off
+    # (default, identical to before).
+    parser.add_argument("--max_samples", type=int, default=0,
+                        help="DRY RUN ONLY: keep the first N rows of train, dev and dev-gen sets (0 = off)")
     return parser.parse_args()
+
+
+def _sweep_values(args):
+    extra = [float(r) for r in getattr(args, "distillation_config_span_top_r_extra", []) or []]
+    return SPAN_TOP_R_SWEEP_VALUES + [r for r in extra if r not in SPAN_TOP_R_SWEEP_VALUES]
 
 
 def _seed_everything(seed: int):
@@ -211,6 +227,22 @@ def _execute_training_run(args, train_config, fsdp_config, distil_config, data_c
         wandb_name_suffix=wandb_name_suffix,
     )
 
+    # Persist dev metrics + w_eff for every run (sweep or not) so the
+    # aggregation script never depends on stdout. Tensors -> float.
+    if rank == 0:
+        def _jsonable(v):
+            if torch.is_tensor(v):
+                return float(v.detach().float().item())
+            if isinstance(v, dict):
+                return {str(k): _jsonable(x) for k, x in v.items()}
+            if isinstance(v, (list, tuple)):
+                return [_jsonable(x) for x in v]
+            return v
+        with open(os.path.join(run_output_dir, "run_results.json"), "w") as fh:
+            json.dump({"span_top_r": getattr(distil_config, "span_top_r", None),
+                       "seed": int(train_config.seed),
+                       **_jsonable(results)}, fh, indent=2)
+
     # Drop heavy refs and reclaim GPU memory before the next sweep run.
     del model, optimizer, scheduler
     del train_dataloader, eval_dataloader
@@ -224,7 +256,7 @@ def _execute_training_run(args, train_config, fsdp_config, distil_config, data_c
 
 def _run_sweep(args, train_config, fsdp_config, distil_config, data_config,
                rank, local_rank, base_output_dir):
-    """Train one student per value in SPAN_TOP_R_SWEEP_VALUES, then pick the
+    """Train one student per value in _sweep_values(args), then pick the
     best by dev CE loss and the best by the generative selection metric
     (dev F1, or for fairytaleQA dev ROUGE-L) — these can differ — and copy
     both winning checkpoints to canonical paths under `base_output_dir`."""
@@ -244,12 +276,13 @@ def _run_sweep(args, train_config, fsdp_config, distil_config, data_config,
             "[sweep] --distillation_config_span_top_r_sweep requires "
             "--distillation_config_span_kd_enabled (otherwise span_top_r has no effect).")
 
+    sweep_values = _sweep_values(args)
     if rank == 0:
-        print(f"\n[sweep] === Span-top-r sweep enabled — values: {SPAN_TOP_R_SWEEP_VALUES} ===\n", flush=True)
+        print(f"\n[sweep] === Span-top-r sweep enabled — values: {sweep_values} ===\n", flush=True)
         os.makedirs(base_output_dir, exist_ok=True)
 
     sweep_results = {}
-    for r in SPAN_TOP_R_SWEEP_VALUES:
+    for r in sweep_values:
         run_dir = os.path.join(base_output_dir, f"r_{r:.1f}")
         if rank == 0:
             print(f"\n[sweep] >>> Starting run for span_top_r = {r}  →  {run_dir}\n", flush=True)
@@ -273,6 +306,10 @@ def _run_sweep(args, train_config, fsdp_config, distil_config, data_config,
             assert mode in ("min", "max")
             cand = []
             for r, res in sweep_results.items():
+                # Extra points (--distillation_config_span_top_r_extra) are
+                # analysis-only: excluding them keeps winner selection
+                # best-of-the-same-3 for every arm, with or without extras.
+                if r not in SPAN_TOP_R_SWEEP_VALUES: continue
                 v = res.get(metric_key, None)
                 if v is None: continue
                 try:
@@ -289,7 +326,7 @@ def _run_sweep(args, train_config, fsdp_config, distil_config, data_config,
 
         # Build a human-readable / machine-readable summary.
         per_run = {}
-        for r in SPAN_TOP_R_SWEEP_VALUES:
+        for r in sweep_values:
             res = sweep_results.get(r, {}) or {}
             bdl = res.get("best_dev_loss", None)
             bdg = res.get(gen_metric_key, None)
@@ -297,6 +334,7 @@ def _run_sweep(args, train_config, fsdp_config, distil_config, data_config,
                 "run_dir": os.path.join(base_output_dir, f"r_{r:.1f}"),
                 "best_dev_loss": float(bdl) if bdl is not None else None,
                 gen_metric_key:  float(bdg) if bdg is not None else None,
+                "w_eff_valid_overall": res.get("w_eff_valid_overall", None),
             }
 
         winner_dev_loss_src = (
@@ -311,7 +349,7 @@ def _run_sweep(args, train_config, fsdp_config, distil_config, data_config,
         winner_dev_gen_dst = os.path.join(base_output_dir, gen_metric_key)
 
         summary = {
-            "sweep_r_values": SPAN_TOP_R_SWEEP_VALUES,
+            "sweep_r_values": sweep_values,
             "seed": int(train_config.seed),
             "per_run": per_run,
             "winner_dev_loss": {
@@ -329,7 +367,7 @@ def _run_sweep(args, train_config, fsdp_config, distil_config, data_config,
         }
 
         print("\n[sweep] === Sweep summary ===", flush=True)
-        for r in SPAN_TOP_R_SWEEP_VALUES:
+        for r in sweep_values:
             entry = per_run[f"{r:.1f}"]
             print(f"  r={r}: best_dev_loss={entry['best_dev_loss']}, "
                   f"{gen_metric_label}={entry[gen_metric_key]}", flush=True)

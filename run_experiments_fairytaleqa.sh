@@ -12,6 +12,10 @@
 #   bash run_experiments_fairytaleqa.sh /workspace/models/Llama-2-7b-chat-hf opt-350m 42 true
 #   bash run_experiments_fairytaleqa.sh /workspace/models/Qwen-7B-Chat opt-350m 63 false
 #   bash run_experiments_fairytaleqa.sh /workspace/models/bloomz-560M opt-350m 42 true
+#   bash run_experiments_fairytaleqa.sh /workspace/models/Llama-2-7b-chat-hf opt-350m 42 random   # random-span control
+#   bash run_experiments_fairytaleqa.sh /workspace/models/Llama-2-7b-chat-hf opt-350m 42 matched  # matched-weight control
+#
+# Optional env: SPAN_TOP_R_EXTRA, MAX_SAMPLES, SKIP_EVAL (same meaning as run_experiments_qed.sh)
 
 set -euo pipefail
 
@@ -22,7 +26,7 @@ if [ $# -lt 3 ]; then
   echo "  teacher_model_path  : Path to teacher model (e.g., /workspace/models/Llama-2-7b-chat-hf)" >&2
   echo "  student_model       : opt-350m or pythia-410m" >&2
   echo "  seed                : Random seed for reproducibility" >&2
-  echo "  span_kd_enabled     : true|false (default: true) - Enable SpanOT-KD reweighting" >&2
+  echo "  span_kd_enabled     : true|false|random|matched (default: true)" >&2
   exit 1
 fi
 
@@ -31,6 +35,9 @@ TEACHER_MODEL_PATH="$1"
 STUDENT_MODEL="$2"
 SEED="$3"
 SPAN_KD_ENABLED="${4:-true}"
+SPAN_TOP_R_EXTRA="${SPAN_TOP_R_EXTRA:-}"
+MAX_SAMPLES="${MAX_SAMPLES:-0}"
+SKIP_EVAL="${SKIP_EVAL:-0}"
 
 # Validate inputs
 if [ ! -d "$TEACHER_MODEL_PATH" ]; then
@@ -66,12 +73,24 @@ fi
 # Output/eval dirs previously encoded only student+seed, so different teachers
 # (and vanilla vs SpanOT-KD) overwrote each other's checkpoints and predictions.
 # Same tagging as run_experiments_qed.sh.
-if [ "$SPAN_KD_ENABLED" = "true" ]; then
-  METHOD_TAG="spanotkd"
-else
-  METHOD_TAG="vanilla"
+case "$SPAN_KD_ENABLED" in
+  true)    METHOD_TAG="spanotkd" ;;
+  random)  METHOD_TAG="randomspan" ;;
+  matched) METHOD_TAG="matchedweight" ;;
+  false)   METHOD_TAG="vanilla" ;;
+  scaled)  # WP8 global-scalar control, see run_experiments_qed.sh
+    if [ -z "${DISTIL_FACTOR:-}" ] || [ -z "${SCALED_R:-}" ]; then
+      echo "ERROR: arm 'scaled' needs DISTIL_FACTOR and SCALED_R env vars" >&2; exit 1
+    fi
+    METHOD_TAG="mlotscaled_r${SCALED_R}" ;;
+  *) echo "ERROR: span_kd_enabled must be true|false|random|matched|scaled, got '$SPAN_KD_ENABLED'" >&2; exit 1 ;;
+esac
+if [ "$SPAN_KD_ENABLED" != "scaled" ] && [ -n "${DISTIL_FACTOR:-}" ] && [ "$DISTIL_FACTOR" != "0.15" ]; then
+  echo "ERROR: DISTIL_FACTOR override is only allowed for arm 'scaled'" >&2; exit 1
 fi
+DISTIL_FACTOR="${DISTIL_FACTOR:-0.15}"
 RUN_TAG="${STUDENT_MODEL%%-*}_${TEACHER_TAG}_${METHOD_TAG}_seed${SEED}"
+if [ "$MAX_SAMPLES" != "0" ]; then RUN_TAG="${RUN_TAG}_dryrun"; fi
 OUTPUT_DIR="$REPO_PATH/output_fairytaleqa_${RUN_TAG}"
 EVAL_DIR="$REPO_PATH/eval_results/fairytaleqa_${RUN_TAG}"
 
@@ -100,7 +119,7 @@ TRAIN_CMD="python $REPO_PATH/finetuning.py \
   --distillation_config_model_name $TEACHER_MODEL_PATH \
   --distillation \
   --distillation_config_pure_bf16 \
-  --distillation_config_distil_factor 0.15 \
+  --distillation_config_distil_factor $DISTIL_FACTOR \
   --dev_split_ratio 0.1 \
   --dev_split_seed $SEED \
   --early_stopping_patience 3 \
@@ -108,16 +127,37 @@ TRAIN_CMD="python $REPO_PATH/finetuning.py \
   --f 1 \
   --seed $SEED"
 
-if [ "$SPAN_KD_ENABLED" = "true" ]; then
+if [ "$SPAN_KD_ENABLED" = "true" ] || [ "$SPAN_KD_ENABLED" = "random" ] || [ "$SPAN_KD_ENABLED" = "matched" ]; then
   TRAIN_CMD="$TRAIN_CMD \
   --distillation_config_span_kd_enabled \
   --distillation_config_span_aggregation mean \
   --distillation_config_span_low_delta 0.1 \
   --distillation_config_span_top_r_sweep"
+  if [ -n "$SPAN_TOP_R_EXTRA" ]; then
+    TRAIN_CMD="$TRAIN_CMD --distillation_config_span_top_r_extra $SPAN_TOP_R_EXTRA"
+  fi
+fi
+if [ "$SPAN_KD_ENABLED" = "random" ]; then
+  TRAIN_CMD="$TRAIN_CMD \
+  --distillation_config_span_select_mode random \
+  --distillation_config_span_random_pool active"
+fi
+if [ "$SPAN_KD_ENABLED" = "matched" ]; then
+  TRAIN_CMD="$TRAIN_CMD \
+  --distillation_config_span_select_mode matched"
+fi
+if [ "$MAX_SAMPLES" != "0" ]; then
+  TRAIN_CMD="$TRAIN_CMD --max_samples $MAX_SAMPLES --num_epochs 1"
 fi
 
 echo "[1/3] Training..."
 CUDA_VISIBLE_DEVICES=0 eval "$TRAIN_CMD"
+echo "$TRAIN_CMD" > "$OUTPUT_DIR/train_cmd.txt"
+
+if [ "$SKIP_EVAL" = "1" ]; then
+  echo "SKIP_EVAL=1 — skipping test-set evaluation."
+  exit 0
+fi
 
 echo ""
 echo "[2/3] Evaluating (best_dev_rouge_l checkpoint)..."

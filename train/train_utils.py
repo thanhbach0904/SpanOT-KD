@@ -90,6 +90,31 @@ def _compute_dev_f1(student_model, dev_gen_dataloader, dev_gen_answers, tokenize
 
 
 
+def _summarise_w_eff(w_eff_by_epoch):
+    """{epoch(1-based str): mean over that epoch's steps, "overall": mean over all steps}.
+
+    "overall" is step-weighted (mean over every logged step), not a mean of
+    epoch means, so an early-stopped short last epoch is not over-weighted.
+    """
+    out = {}
+    all_vals = []
+    for ep in sorted(w_eff_by_epoch):
+        vals = w_eff_by_epoch[ep]
+        if vals:
+            out[str(ep + 1)] = sum(vals) / len(vals)
+            all_vals.extend(vals)
+    out["overall"] = sum(all_vals) / len(all_vals) if all_vals else None
+    return out
+
+
+def _write_w_eff_json(w_eff_by_epoch, output_dir):
+    if not output_dir:
+        return
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, "w_eff.json"), "w") as fh:
+        json.dump(_summarise_w_eff(w_eff_by_epoch), fh, indent=2)
+
+
 def run_grad_norm_probe(components, student_params, optimizer):
     """Backward each component separately and return a dict of grad norms.
 
@@ -301,6 +326,9 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
     }
     # Per-component gradient-norm probes (rank 0 only, opt-in via env var).
     grad_norm_history = {"step": [], "l1": [], "kl": [], "sinkhorn": []}
+    # Per-step w_eff_valid (rank 0), grouped by epoch, persisted to w_eff.json
+    # after every epoch so a dead instance still leaves the matching data.
+    w_eff_by_epoch = {}
 
     # Opt-in per-component gradient-norm probe.
     # Set LSD_PROBE_EVERY=N to run the probe every N optimiser steps (N=0 disables).
@@ -494,6 +522,8 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                         loss_history["cost_mean"].append(cost_mean)
                         loss_history["cost_max"].append(cost_max)
                         loss_history["cost_min"].append(cost_min)
+                        w_eff_valid = float(diag.get("w_eff_valid", 1.0))
+                        w_eff_by_epoch.setdefault(epoch, []).append(w_eff_valid)
 
                         wandb.log({
                             "train_loss": loss.detach().float(),
@@ -519,6 +549,7 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
                             "diag/span_kd_enabled":             int(diag.get("span_kd_enabled", False)),
                             "diag/span_low_weight_frac":        float(diag.get("span_low_weight_frac", 0.0)),
                             "diag/span_position_weight_mean":   float(diag.get("span_position_weight_mean", 1.0)),
+                            "diag/w_eff_valid":                 w_eff_valid,
                             "teacher_loss": teacher_output.loss.detach().float(),
                             "lr": optimizer.param_groups[0]['lr'],
                             "grad_probe_ran": int(ran_grad_probe),
@@ -540,6 +571,8 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
             distillation_loss.on_epoch_end()
 
         if rank == 0: print(memtrace)
+        if rank == 0 and train_config.distillation:
+            _write_w_eff_json(w_eff_by_epoch, train_config.output_dir)
         epoch_end_time = time.perf_counter()-epoch_start_time
         epoch_times.append(epoch_end_time)
 
@@ -689,6 +722,10 @@ def train(model, train_dataloader, eval_dataloader, optimizer, lr_scheduler, gra
 
     results['avg_train_prep'] = avg_train_prep
     results['avg_train_loss'] = avg_train_loss
+    if rank == 0 and train_config.distillation and w_eff_by_epoch:
+        w_eff_summary = _summarise_w_eff(w_eff_by_epoch)
+        results["w_eff_valid_per_epoch"] = {k: v for k, v in w_eff_summary.items() if k != "overall"}
+        results["w_eff_valid_overall"] = w_eff_summary["overall"]
     results["avg_epoch_time"] = avg_epoch_time
     results["avg_checkpoint_time"] = avg_checkpoint_time
     if train_config.run_validation and len(val_loss) > 0:

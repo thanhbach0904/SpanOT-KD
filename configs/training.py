@@ -44,3 +44,5 @@ class train_config:
     dev_eval_max_new_tokens: int = 64
     # Batch size for the dev generation dataloader.
     dev_gen_batch_size: int = 4
+    # Dry-run only: keep the first N rows of train / dev / dev-gen sets. 0 = off.
+    max_samples: int = 0

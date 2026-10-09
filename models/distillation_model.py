@@ -315,7 +315,7 @@ class DistillationLoss(nn.Module):
         self.span_aggregation = span_aggregation
         self.span_top_r = float(span_top_r)
         self.span_low_delta = float(span_low_delta)
-        assert span_select_mode in ("entropy", "random"), span_select_mode
+        assert span_select_mode in ("entropy", "random", "matched"), span_select_mode
         assert span_random_pool in ("active", "pos"), span_random_pool
         self.span_select_mode = span_select_mode
         self.span_random_pool = span_random_pool
@@ -609,10 +609,15 @@ class DistillationLoss(nn.Module):
                 low_frac = float((w < 1.0).float().mean().item())
                 mean_w = float(w.mean().item())
             diagnostics["span_low_weight_frac"] = low_frac
+            # Biased upward (includes padding / rows past min(s, t), all 1.0).
+            # Use w_eff_valid below for any weight matching.
             diagnostics["span_position_weight_mean"] = mean_w
         else:
             diagnostics["span_low_weight_frac"] = 0.0
             diagnostics["span_position_weight_mean"] = 1.0
+        from train.span_ot import effective_weight_valid
+        diagnostics["w_eff_valid"] = effective_weight_valid(
+            position_weights, student_answer_size, teacher_answer_size)
 
         if self.debug and rank == self.debug_rank:
             print("--------------------------------------")

@@ -38,6 +38,15 @@ def _load_dataset_module(dataset_config):
     return load_module_from_py_file(module_path.as_posix())
 
 
+def _cap_rows(dataset, train_config):
+    """Dry-run helper: keep the first `train_config.max_samples` rows (0 = off).
+    Index-based, so student and teacher datasets keep the same rows."""
+    n = int(getattr(train_config, "max_samples", 0) or 0)
+    if n > 0 and len(dataset) > n:
+        dataset = dataset.select(range(n))
+    return dataset
+
+
 def get_dataset(dataset_config, tokenizer, split: str) -> torch.utils.data.Dataset:
     module = _load_dataset_module(dataset_config)
     try:
@@ -76,6 +85,7 @@ def get_dataloader(dataset_config, train_config, tokenizer, rank, distil_config=
         sort_index = [idx for idx, ex in enumerate(dataset_train) if len(ex['input_ids']) <= train_config.context_length]
     if train_config.context_length and sort_index:
         dataset_train = dataset_train.select(sort_index)
+    dataset_train = _cap_rows(dataset_train, train_config)
 
     train_dl_kwargs = get_dataloader_kwargs(train_config, dataset_train, tokenizer, "train", distil_config)
     train_dataloader = torch.utils.data.DataLoader(
@@ -102,6 +112,7 @@ def get_dataloader(dataset_config, train_config, tokenizer, rank, distil_config=
             sort_index_val = [idx for idx, ex in enumerate(dataset_val) if len(ex['input_ids']) <= train_config.context_length]
         if sort_index_val:
             dataset_val = dataset_val.select(sort_index_val)
+        dataset_val = _cap_rows(dataset_val, train_config)
 
         if train_config.batching_strategy == "packing":
             dataset_val = ConcatDataset(
@@ -134,6 +145,7 @@ def get_dev_gen_dataloader(dataset_config, train_config, tokenizer, rank):
     (the caller pulls it out before set_format strips non-tensor columns).
     """
     dataset = get_dev_generation_dataset(dataset_config, tokenizer)
+    dataset = _cap_rows(dataset, train_config)
 
     # Pull the gold answers out before we lock the format to tensors.
     answers = []
