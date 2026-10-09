@@ -17,6 +17,9 @@
 #                           never used for dev winner selection)
 #   MAX_SAMPLES=16          DRY RUN: 16 rows of train/dev/dev-gen, 1 epoch, run tag gets _dryrun
 #   SKIP_EVAL=1             skip the two test-set evaluation steps
+#   LOW_DELTA=0.25          span_low_delta for the span arms (default 0.1). A non-default
+#                           value adds _d<delta> to the run tag so it never overwrites
+#                           the main runs. delta=1 is vanilla MLOT: run arm 'false' instead.
 
 set -euo pipefail
 
@@ -35,6 +38,7 @@ fi
 SPAN_TOP_R_EXTRA="${SPAN_TOP_R_EXTRA:-}"
 MAX_SAMPLES="${MAX_SAMPLES:-0}"
 SKIP_EVAL="${SKIP_EVAL:-0}"
+LOW_DELTA="${LOW_DELTA:-0.1}"
 
 export HOME=${HOME:-/workspace}
 TEACHER_MODEL_PATH="$1"
@@ -83,6 +87,15 @@ if [ "$SPAN_KD_ENABLED" != "scaled" ] && [ -n "${DISTIL_FACTOR:-}" ] && [ "$DIST
   echo "ERROR: DISTIL_FACTOR override is only allowed for arm 'scaled'" >&2; exit 1
 fi
 DISTIL_FACTOR="${DISTIL_FACTOR:-0.15}"
+if ! awk -v d="$LOW_DELTA" 'BEGIN { exit !(d ~ /^[0-9]*\.?[0-9]+$/ && d >= 0 && d < 1) }'; then
+  echo "ERROR: LOW_DELTA must be a number in [0, 1), got '$LOW_DELTA' (delta=1 is vanilla: use arm 'false')" >&2; exit 1
+fi
+if [ "$LOW_DELTA" != "0.1" ]; then
+  case "$SPAN_KD_ENABLED" in
+    true|random|matched) METHOD_TAG="${METHOD_TAG}_d${LOW_DELTA}" ;;
+    *) echo "ERROR: LOW_DELTA override only applies to span arms (true|random|matched)" >&2; exit 1 ;;
+  esac
+fi
 if [ -n "$FIXED_R" ]; then METHOD_TAG="${METHOD_TAG}_r${FIXED_R}"; fi
 RUN_TAG="${STUDENT_MODEL%%-*}_${TEACHER_TAG}_${METHOD_TAG}_seed${SEED}"
 if [ "$MAX_SAMPLES" != "0" ]; then RUN_TAG="${RUN_TAG}_dryrun"; fi
@@ -96,6 +109,7 @@ echo "Student Model    : $STUDENT_MODEL"
 echo "Student Path     : $STUDENT_PATH"
 echo "Seed             : $SEED"
 echo "SpanOT-KD        : $SPAN_KD_ENABLED"
+echo "span_low_delta   : $LOW_DELTA (ignored unless span arm)"
 echo "Dataset          : QED"
 echo "Output Dir       : $OUTPUT_DIR"
 echo "════════════════════════════════════════════════════════════════"
@@ -126,7 +140,7 @@ if [ "$SPAN_KD_ENABLED" = "true" ] || [ "$SPAN_KD_ENABLED" = "random" ] || [ "$S
   TRAIN_CMD="$TRAIN_CMD \
   --distillation_config_span_kd_enabled \
   --distillation_config_span_aggregation mean \
-  --distillation_config_span_low_delta 0.1"
+  --distillation_config_span_low_delta $LOW_DELTA"
   if [ -n "$FIXED_R" ]; then
     TRAIN_CMD="$TRAIN_CMD --distillation_config_span_top_r $FIXED_R"
   else
